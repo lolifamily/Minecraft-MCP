@@ -1,0 +1,10 @@
+# Version numbers for MC 26.1.2 — the `mc` catalog. No parchment: unobfuscated, so Mojang ships its own param names.
+[versions]
+minecraft = "26.1.2"
+forge = "64.0.11"
+neoforge = "26.1.2.76"
+fabricLoader = "0.19.3"
+# From 26.1 the paper-api coordinate carries the build number ("-R0.1-SNAPSHOT" is gone), so "+" is the only way to
+# track the newest one. paperApiLevel is plugin.yml's api-version, which takes the plain MC version.
+paperApi = "26.1.2.build.+"
+paperApiLevel = "26.1.2"

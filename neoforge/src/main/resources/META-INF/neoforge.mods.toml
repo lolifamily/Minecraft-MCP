@@ -1,0 +1,28 @@
+modLoader = "javafml"
+loaderVersion = "${neoforge_loader_version_range}"
+license = "${license}"
+issueTrackerURL = "${issues}"
+[[mods]]
+modId = "${mod_id}"
+version = "${version}"
+displayName = "${mod_name}"
+credits="${credits}"
+authors = "${mod_author}"
+description = '''${description}'''
+displayURL = "${homepage}"
+# Mixins are side-scoped, so a one-sided install is valid; MATCH_VERSION would reject it.
+displayTest = "IGNORE_ALL_VERSION"
+[[mixins]]
+config = "minecraft_mcp.mixins.json"
+[[dependencies.${mod_id}]]
+modId = "neoforge"
+type="required"
+versionRange = "[${neoforge_version},)"
+ordering = "NONE"
+side = "BOTH"
+[[dependencies.${mod_id}]]
+modId = "minecraft"
+type="required"
+versionRange = "${minecraft_version_range}"
+ordering = "NONE"
+side = "BOTH"

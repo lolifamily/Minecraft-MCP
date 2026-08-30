@@ -1,0 +1,236 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # versions/ is the single source of truth for the node list, as in settings.gradle.kts and
+  # gradlewall. Never hardcode MC versions in this file.
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      nodes: ${{ steps.scan.outputs.nodes }}
+      current: ${{ steps.scan.outputs.current }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: scan
+        run: |
+          nodes=$(for d in versions/*/; do
+            if [ -f "$d/gradle.properties" ]; then basename "$d"; fi
+          done | jq -R . | jq -sc .)
+          echo "nodes=$nodes" >> "$GITHUB_OUTPUT"
+          echo "current=$(tr -d '[:space:]' < versions/current)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: discover
+    runs-on: ubuntu-latest
+    # An empty matrix output is skipped rather than overwriting, so a passing leg writes
+    # nothing and any failing leg wins no matter which finishes last.
+    outputs:
+      lint_failed: ${{ steps.lint.outcome == 'failure' && 'true' || '' }}
+    permissions:
+      contents: write # the tag release below attaches the jars
+    strategy:
+      # One MC node per runner: their toolchain caches share almost nothing, and a runner has
+      # no disk for more than one. A red node must not cancel the others.
+      fail-fast: false
+      matrix:
+        mc: ${{ fromJSON(needs.discover.outputs.nodes) }}
+    env:
+      # Docs track main only, and only from the node versions/current points at.
+      PUBLISH_DOCS: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.mc == needs.discover.outputs.current }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: chmod +x gradlew
+
+      - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: temurin
+          java-version: 25 # java_version in gradle.properties
+
+      # No cache inputs on purpose. The cache key already hashes the matrix, so each node gets
+      # its own entry; cache-read-only defaults to "default branch writes only" and
+      # cache-cleanup to on-success. A hand-rolled actions/cache on ~/.gradle would defeat the
+      # per-artifact deduplication that stores the shared dependency set once.
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+
+      # Jars are named <mod_id>-<module>-<mc>-<version>[-classifier].jar (see archivesName in
+      # multiloader-common). The node-dependent bits come from the same files the build reads.
+      - name: Resolve node facts
+        run: |
+          p=versions/${{ matrix.mc }}/gradle.properties
+          echo "TAG=${{ matrix.mc }}-$(sed -n 's/^version=//p' gradle.properties)" >> "$GITHUB_ENV"
+          # Forge below 50 runs on SRG names; the reobfuscated jar is the one that loads.
+          if grep -q '^srg_runtime=true' "$p"; then echo "SRG=-srg" >> "$GITHUB_ENV"; fi
+          # :neoforge is only in the build when the node ships NeoForge coordinates.
+          if grep -q '^neoforge_loader_version_range=' "$p"; then echo "NEOFORGE=1" >> "$GITHUB_ENV"; fi
+
+      - name: Assemble
+        run: ./gradlew -PmcVersion=${{ matrix.mc }} assemble
+
+      # detektMain, not detekt: in detekt 2.x the plain `detekt` task runs WITHOUT type
+      # resolution, so every rule needing type info silently passes. checkstyleMain is spelled
+      # all-lowercase "checkstyle" — "checkStyleMain" misses Gradle's camel-case matching.
+      # --continue so all three tools report in one run instead of stopping at the first.
+      # A lint failure never fails the leg: that would block `needs: build` and leave the
+      # draft release unfrozen. The lint job reddens the run instead.
+      - id: lint
+        name: Lint
+        continue-on-error: true
+        run: ./gradlew -PmcVersion=${{ matrix.mc }} detektMain ktlintCheck checkstyleMain --continue
+
+      # Leading colon: an unqualified name matches every project and writes one site each.
+      - name: Dokka
+        run: ./gradlew -PmcVersion=${{ matrix.mc }} :dokkaGenerateHtml
+
+      # archive:false uploads the jar verbatim instead of zipping it. It takes exactly one
+      # file and ignores `name` — the artifact is named after the jar. :common and :bridge are
+      # not shipped: common's sources and classes are folded into every loader jar.
+      - name: fabric jar
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: fabric/build/libs/minecraft_mcp-fabric-${{ env.TAG }}.jar
+          archive: false
+      - name: fabric sources
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: fabric/build/libs/minecraft_mcp-fabric-${{ env.TAG }}-sources.jar
+          archive: false
+      - name: fabric javadoc
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: fabric/build/libs/minecraft_mcp-fabric-${{ env.TAG }}-javadoc.jar
+          archive: false
+
+      - name: forge jar
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: forge/build/libs/minecraft_mcp-forge-${{ env.TAG }}${{ env.SRG }}.jar
+          archive: false
+      - name: forge sources
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: forge/build/libs/minecraft_mcp-forge-${{ env.TAG }}-sources.jar
+          archive: false
+      - name: forge javadoc
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: forge/build/libs/minecraft_mcp-forge-${{ env.TAG }}-javadoc.jar
+          archive: false
+
+      - name: neoforge jar
+        if: env.NEOFORGE
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: neoforge/build/libs/minecraft_mcp-neoforge-${{ env.TAG }}.jar
+          archive: false
+      - name: neoforge sources
+        if: env.NEOFORGE
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: neoforge/build/libs/minecraft_mcp-neoforge-${{ env.TAG }}-sources.jar
+          archive: false
+      - name: neoforge javadoc
+        if: env.NEOFORGE
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: neoforge/build/libs/minecraft_mcp-neoforge-${{ env.TAG }}-javadoc.jar
+          archive: false
+
+      - name: paper jar
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: paper/build/libs/minecraft_mcp-paper-${{ env.TAG }}.jar
+          archive: false
+      - name: paper sources
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: paper/build/libs/minecraft_mcp-paper-${{ env.TAG }}-sources.jar
+          archive: false
+      - name: paper javadoc
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: paper/build/libs/minecraft_mcp-paper-${{ env.TAG }}-javadoc.jar
+          archive: false
+
+      # A directory cannot use archive:false; only the jars must stay raw.
+      - name: dokka site
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dokka-html-${{ matrix.mc }}
+          path: build/dokka/html
+
+      # Assets only; the release job publishes the draft once every leg has uploaded. Drafts
+      # are the documented exemption from immutable releases, which lock a release's assets
+      # the moment it is published. gh is preinstalled and is the path GitHub points at,
+      # having archived its own release actions. --clobber replaces a same-named asset
+      # instead of failing, so re-running a leg is harmless; `|| true` covers a sibling leg
+      # having created the draft first.
+      - name: Release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" --draft --generate-notes --verify-tag || true
+          gh release upload "${{ github.ref_name }}" \
+            fabric/build/libs/minecraft_mcp-fabric-$TAG.jar \
+            fabric/build/libs/minecraft_mcp-fabric-$TAG-sources.jar \
+            fabric/build/libs/minecraft_mcp-fabric-$TAG-javadoc.jar \
+            forge/build/libs/minecraft_mcp-forge-$TAG${SRG:-}.jar \
+            forge/build/libs/minecraft_mcp-forge-$TAG-sources.jar \
+            forge/build/libs/minecraft_mcp-forge-$TAG-javadoc.jar \
+            paper/build/libs/minecraft_mcp-paper-$TAG.jar \
+            paper/build/libs/minecraft_mcp-paper-$TAG-sources.jar \
+            paper/build/libs/minecraft_mcp-paper-$TAG-javadoc.jar \
+            --clobber
+          if [ -n "${NEOFORGE:-}" ]; then
+            gh release upload "${{ github.ref_name }}" \
+              neoforge/build/libs/minecraft_mcp-neoforge-$TAG.jar \
+              neoforge/build/libs/minecraft_mcp-neoforge-$TAG-sources.jar \
+              neoforge/build/libs/minecraft_mcp-neoforge-$TAG-javadoc.jar \
+              --clobber
+          fi
+
+      - name: Publish docs
+        if: env.PUBLISH_DOCS == 'true'
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy
+
+  # Publishing freezes the assets and pins the tag, so it happens once, after every leg has
+  # uploaded. Plain `needs`: a leg that died uploaded nothing, and the draft stays a draft.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }} # no checkout, so name the repo explicitly
+        run: gh release edit "${{ github.ref_name }}" --draft=false
+
+  # Nothing above ever fails on lint, so this is the only thing that turns the run red.
+  # Protect branches on this job, not on build.
+  lint:
+    needs: build
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - if: needs.build.outputs.lint_failed == 'true'
+        run: exit 1

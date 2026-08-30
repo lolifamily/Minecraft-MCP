@@ -1,0 +1,12 @@
+# Version numbers for MC 1.18.2 — the `mc` catalog.
+# neoforge is absent — NeoForge starts at 1.20.1.
+[versions]
+minecraft = "1.18.2"
+forge = "40.2.21"
+fabricLoader = "0.16.9"
+parchment = "2022.11.06"
+parchmentMinecraft = "1.18.2"
+# paperApiLevel is plugin.yml's api-version, not the artifact version. Below 1.20.5 CraftMagicNumbers matches it
+# against a literal major.minor list, so "1.18.2" would be rejected and the plugin would not load at all.
+paperApi = "1.18.2-R0.1-SNAPSHOT"
+paperApiLevel = "1.18"

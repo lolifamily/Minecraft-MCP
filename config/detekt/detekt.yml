@@ -1,0 +1,33 @@
+# Only rules whose premise doesn't hold here. complexity/CyclomaticComplexMethod + TooManyFunctions stay on
+# on purpose — their remaining hits are real.
+
+empty-blocks:
+  EmptyFunctionBlock:
+    # Every hit is an empty override of a mapping-io / tiny-remapper visitor. An empty override IS the
+    # contract: "this callback has nothing to do".
+    ignoreOverridden: true
+
+exceptions:
+  TooGenericExceptionCaught:
+    # Checked site by site. Each remaining one is a degradation boundary whose expected failures are Errors —
+    # NoClassDefFoundError, VerifyError, and ScriptTimeoutError (an Error by design, so a snippet can't swallow
+    # its own timeout) — which catch(Exception) cannot see. The three sites with a closed throws contract are
+    # already narrowed.
+    active: false
+
+style:
+  MaxLineLength:
+    # Line length is owned by ktlint (max_line_length=140 in .editorconfig). Disabled here so the two tools
+    # don't double-report the same dimension — and don't disagree on edge cases (ktlint exempts unbreakable
+    # long tokens like KDoc references / string literals; detekt counts characters mechanically).
+    active: false
+  MagicNumber:
+    # JSON-RPC codes, HTTP statuses, class-file constants, TSRG column offsets, buffer sizes. Naming them
+    # hides the spec instead of revealing intent.
+    active: false
+  ReturnCount:
+    # max=2 fights guard clauses, which is what keeps the zip/reflection walks shallow.
+    active: false
+  LoopWithTooManyJumpStatements:
+    # maxJumpCount=1; every hit is a scan loop filtering with `continue`. The alternative is deeper nesting.
+    active: false

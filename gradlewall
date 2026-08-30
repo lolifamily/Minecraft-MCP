@@ -1,0 +1,64 @@
+#!/bin/sh
+#
+# gradlewall — run ./gradlew once per MC version node, serially, all nodes attempted.
+#
+# Every argument is passed straight through to gradlew, so this is a drop-in alias:
+#
+#     ./gradlewall assemble
+#     ./gradlewall build --console=plain
+#     ./gradlewall clean
+#
+# becomes, for each node N under versions/:
+#
+#     ./gradlew -PmcVersion=N <your args>
+#
+# A failing node does NOT stop the remaining ones; the run ends with a PASS/FAIL
+# summary and exits 1 if any node failed.
+#
+# The node list is the set of directories under versions/ that carry a
+# gradle.properties. It is never hardcoded here — versions/ is the single source
+# of truth, exactly as settings.gradle.kts treats it. The versions/current FILE
+# is skipped for free, since the glob only matches directories.
+#
+# -PmcVersion outranks both MCP_MC_VERSION and versions/current in
+# settings.gradle.kts, so this script never writes versions/current and leaves
+# your active node untouched.
+
+set -u
+
+DIR=$(cd "$(dirname "$0")" && pwd)
+
+passed=""
+failed=""
+status=0
+
+for node in "$DIR"/versions/*/; do
+    [ -f "$node/gradle.properties" ] || continue
+    v=$(basename "$node")
+
+    echo
+    echo "============================================================"
+    echo "  gradlewall: $v"
+    echo "============================================================"
+
+    if "$DIR/gradlew" -PmcVersion="$v" "$@"; then
+        passed="$passed $v"
+    else
+        failed="$failed $v"
+        status=1
+    fi
+done
+
+if [ -z "$passed$failed" ]; then
+    echo "gradlewall: no version nodes found under $DIR/versions" >&2
+    exit 1
+fi
+
+echo
+echo "============================================================"
+echo "  gradlewall summary"
+echo "============================================================"
+for v in $passed; do echo "  PASS  $v"; done
+for v in $failed; do echo "  FAIL  $v"; done
+
+exit $status

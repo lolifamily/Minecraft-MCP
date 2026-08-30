@@ -1,0 +1,10 @@
+{
+  "$schema": "https://cdn.jsdelivr.net/npm/wrangler/config-schema.json",
+  "name": "minecraft-mcp",
+  "compatibility_date": "2026-08-30",
+  "workers_dev": true,
+  "preview_urls": true,
+  "assets": {
+    "directory": "./build/dokka/html"
+  }
+}

@@ -1,0 +1,23 @@
+# Legacy descriptor, not paper-plugin.yml: io.papermc.paper.plugin.bootstrap does not exist on 1.18, and this
+# has to bind on that node too.
+name: ${mod_id}
+version: ${version}
+main: org.js.lolifamily.minecraftmcp.MinecraftMcp
+description: ${description}
+author: ${mod_author}
+website: ${homepage}
+# Its own key rather than the raw MC version: below 1.20.5 CraftMagicNumbers matches api-version against a literal
+# major.minor list, so the 1.18.2 node has to declare "1.18". Quoted because unquoted 1.18 is a YAML float.
+api-version: "${paper_api_level}"
+# The MCP endpoint and the REPL warmup come up before worlds load, as they do on a mod host.
+load: STARTUP
+# Bukkit has no jar-in-jar, so what forge/neoforge get from jarJar and fabric from include is pulled by Paper's
+# LibraryLoader instead. It lands on a URLClassLoader that PARENTS ours, which keeps stdlib and reflect on one
+# loader — the constraint MaskingClassLoader documents. The REPL's own scripting stack is unaffected: it ships as
+# the plain mcp-kotlin/ resource dir and is loaded off it, exactly as on a mod host.
+# Versions must track the ones in forge/neoforge/build.gradle.kts.
+libraries:
+  - org.jetbrains.kotlin:kotlin-stdlib:2.4.10
+  - org.jetbrains.kotlin:kotlin-reflect:2.4.10
+  - net.bytebuddy:byte-buddy:1.18.12
+  - net.bytebuddy:byte-buddy-agent:1.18.12

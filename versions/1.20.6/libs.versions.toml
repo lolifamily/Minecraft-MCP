@@ -1,0 +1,12 @@
+# Version numbers for MC 1.20.6 — the `mc` catalog.
+[versions]
+minecraft = "1.20.6"
+forge = "50.2.1"
+neoforge = "20.6.139"
+fabricLoader = "0.16.9"
+parchment = "2024.06.16"
+parchmentMinecraft = "1.20.6"
+# paperApiLevel is plugin.yml's api-version. 1.20.5+ parses it into major/minor/patch instead of matching a list,
+# so the patch is both legal and load-bearing — ApiVersion gates behaviour on it.
+paperApi = "1.20.6-R0.1-SNAPSHOT"
+paperApiLevel = "1.20.6"

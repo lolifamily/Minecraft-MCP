@@ -1,0 +1,23 @@
+{
+  "required": true,
+  "minVersion": "0.8.3",
+  "package": "org.js.lolifamily.minecraftmcp.mixin",
+  "plugin": "org.js.lolifamily.minecraftmcp.mixin.McpMixinPlugin",
+  "refmap": "${mod_id}.refmap.json",
+  "compatibilityLevel": "JAVA_${mixin_compat}",
+  "mixins": [
+    "MixinMinecraftServer"
+  ],
+  "client": [
+    "MixinMinecraft",
+    "MixinChatComponentLegacy",
+    "MixinChatComponentFunnel",
+    "MixinChatComponentModern"
+  ],
+  "server": [
+    "MixinDedicatedServer"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

@@ -1,0 +1,30 @@
+{
+    "schemaVersion": 1,
+    "id": "${mod_id}",
+    "version": "${version}",
+    "name": "${mod_name}",
+    "description": "${description}",
+    "authors": [
+        "${mod_author}"
+    ],
+    "contact": {
+        "homepage": "${homepage}",
+        "issues": "${issues}"
+    },
+    "license": "${license}",
+    "environment": "*",
+    "entrypoints": {
+        "main": [
+            "org.js.lolifamily.minecraftmcp.MinecraftMcp"
+        ]
+    },
+    "mixins": [
+        "minecraft_mcp.mixins.json"
+    ],
+    "depends": {
+        "fabricloader": ">=${fabric_loader_version}",
+        "minecraft": "${fabric_minecraft_version_range}",
+        "java": ">=${bytecode_version}"
+    }
+}
+  

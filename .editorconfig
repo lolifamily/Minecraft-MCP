@@ -1,0 +1,9 @@
+[*.{kt,kts}]
+ktlint_code_style = intellij_idea
+max_line_length = 140
+ktlint_standard_no-multi-spaces = disabled
+ktlint_standard_argument-list-wrapping = disabled
+ktlint_standard_statement-wrapping = disabled
+# Rule blank-line-between-when-conditions stays ON; this only stops it inserting the blank lines, whose autofix
+# in 1.8.0 relocates a trailing comment onto the NEXT branch (ktlint/ktlint#3209, #3177 — fixed in 2.0.0).
+ij_kotlin_line_break_after_multiline_when_entry = false
