@@ -675,6 +675,18 @@ otherwise go down again, marked closed and why. Attention should land near what 
 this next, person or model, should find the reasoning where it applies rather than in a directory that has
 drifted away from it.
 
+Credit of a different kind goes to a livestream. [**Glavo**](https://space.bilibili.com/20314891) is a core
+developer of HMCL — one of the launchers this ecosystem actually starts the game with — and, by
+self-description, [a cat](https://www.bilibili.com/video/BV1TXJE6EEVK). Not a catgirl. A cat. That is what
+got me to click, and without it none of the rest of this happens. An entity from an aviation mod clipped
+through the floor mid-stream. Locating it came down to eyeballing candidates by hand; moving it, once
+located, was retry after retry, with creative-mode tools barely able to budge the thing. Past that there was
+nothing to do but play it cute for the chat. None of it for lack of skill — Glavo writes the launcher, the
+JVM is home turf, and nobody in that stream was better placed to build the missing tool. That is what
+surprised me. The ceiling is not expertise; it is that a shipped game leaves no seam an expert can talk to
+while it runs, and everyone, expert included, has quietly priced that in and stopped noticing it was
+missing.
+
 Thanks as well to the several **Unity MCP** implementations, which settled the question of whether anyone
 wants this — they do; there is just nothing pointed at games that have already shipped. And to
 [Linux DO](https://linux.do), for the experience and the guidance while I was learning to work this way.

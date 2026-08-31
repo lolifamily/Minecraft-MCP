@@ -31,3 +31,6 @@ __pycache__
 
 # claude
 .claude
+
+# misc
+COMMIT_MSG.tmp
