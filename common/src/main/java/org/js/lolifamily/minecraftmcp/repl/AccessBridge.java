@@ -199,9 +199,9 @@ public final class AccessBridge {
 
     /**
      * A Kotlin {@code private val} has a backing field and no accessor, yet the metadata flip makes the
-     * frontend emit {@code getXxx()} against it — resolve such a call to the field instead. An {@code object}
-     * or top-level property backs onto a STATIC field, so {@code hasReceiver} says whether the call site
-     * passes one that the handle has to swallow.
+     * frontend emit {@code getXxx()} against it — resolve such a call to the field instead. An {@code object},
+     * companion or top-level property backs onto a STATIC field, so {@code hasReceiver} says whether the call
+     * site passes one that the handle has to swallow.
      *
      * <p>Matched field-to-accessor, never the reverse: the mapping is not injective, {@code setEmpty} being
      * the setter of both {@code empty} and {@code isEmpty}.
@@ -225,7 +225,20 @@ public final class AccessBridge {
                 return hasReceiver ? MethodHandles.dropArguments(mh, 0, c) : mh;
             }
         }
+        // A companion's backing field is outside its own hierarchy: a static on the class it is the companion of.
+        Class<?> host = cls.getDeclaringClass();
+        if (hasReceiver && host != null && isCompanion(cls, host)) {
+            return MethodHandles.dropArguments(backingField(host, method, mt, false, caller, cause), 0, cls);
+        }
         throw cause;   // not a property accessor either — report the call that was actually made
+    }
+
+    /** Whether {@code cls} is {@code host}'s companion object, which the host holds in a static field. */
+    private static boolean isCompanion(Class<?> cls, Class<?> host) {
+        for (Field f : host.getDeclaredFields()) {
+            if (Modifier.isStatic(f.getModifiers()) && f.getType() == cls) return true;
+        }
+        return false;
     }
 
     /** {@code JvmAbi.getterName}: an {@code is}-prefixed property is already its own getter. */

@@ -78,8 +78,8 @@ dependencies {
     // -PnoKotlinJij skips these, leaving kotlin to the platform's provider — deliberately without declaring a
     // dependency on it in exchange.
     if (!providers.gradleProperty("noKotlinJij").isPresent) {
-        "include"("org.jetbrains.kotlin:kotlin-stdlib:2.4.10")
-        "include"("org.jetbrains.kotlin:kotlin-reflect:2.4.10")
+        "include"("org.jetbrains.kotlin:kotlin-stdlib:2.4.20")
+        "include"("org.jetbrains.kotlin:kotlin-reflect:2.4.20")
     }
 }
 

@@ -17,7 +17,7 @@ load: STARTUP
 # the plain mcp-kotlin/ resource dir and is loaded off it, exactly as on a mod host.
 # Versions must track the ones in forge/neoforge/build.gradle.kts.
 libraries:
-  - org.jetbrains.kotlin:kotlin-stdlib:2.4.10
-  - org.jetbrains.kotlin:kotlin-reflect:2.4.10
+  - org.jetbrains.kotlin:kotlin-stdlib:2.4.20
+  - org.jetbrains.kotlin:kotlin-reflect:2.4.20
   - net.bytebuddy:byte-buddy:1.18.14
   - net.bytebuddy:byte-buddy-agent:1.18.14

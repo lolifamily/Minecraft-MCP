@@ -1,6 +1,6 @@
 package org.js.lolifamily.minecraftmcp.repl.impl
 
-import org.jetbrains.kotlin.K1Deprecation
+import org.jetbrains.kotlin.CoreEnvironmentDeprecation
 import org.jetbrains.kotlin.KtInMemoryTextSourceFile
 import org.jetbrains.kotlin.backend.common.extensions.IrGenerationExtension
 import org.jetbrains.kotlin.backend.jvm.JvmIrCodegenFactory
@@ -12,12 +12,12 @@ import org.jetbrains.kotlin.cli.jvm.compiler.EnvironmentConfigFiles
 import org.jetbrains.kotlin.cli.jvm.compiler.KotlinCoreEnvironment
 import org.jetbrains.kotlin.cli.jvm.compiler.PsiBasedProjectFileSearchScope
 import org.jetbrains.kotlin.cli.jvm.compiler.VfsBasedProjectEnvironment
-import org.jetbrains.kotlin.cli.jvm.compiler.createLibraryListForJvm
-import org.jetbrains.kotlin.cli.jvm.compiler.legacy.pipeline.convertToIrAndActualizeForJvm
 import org.jetbrains.kotlin.cli.jvm.compiler.toVfsBasedProjectEnvironment
 import org.jetbrains.kotlin.cli.jvm.config.addJvmClasspathRoots
 import org.jetbrains.kotlin.cli.jvm.config.configureJdkClasspathRoots
 import org.jetbrains.kotlin.cli.jvm.configureJdkHomeFromSystemProperty
+import org.jetbrains.kotlin.cli.pipeline.jvm.JvmFir2IrPipelinePhase.convertToIrAndActualizeForJvm
+import org.jetbrains.kotlin.cli.pipeline.jvm.JvmFrontendPipelinePhase.createLibraryListForJvm
 import org.jetbrains.kotlin.codegen.ClassBuilderFactories
 import org.jetbrains.kotlin.codegen.state.GenerationState
 import org.jetbrains.kotlin.com.intellij.openapi.util.Disposer
@@ -55,6 +55,7 @@ import org.jetbrains.kotlin.fir.pipeline.runCheckers
 import org.jetbrains.kotlin.fir.pipeline.runResolution
 import org.jetbrains.kotlin.fir.resolve.toRegularClassSymbol
 import org.jetbrains.kotlin.fir.session.FirJvmSessionFactory
+import org.jetbrains.kotlin.fir.session.KmpModuleKind
 import org.jetbrains.kotlin.fir.session.environment.AbstractProjectFileSearchScope
 import org.jetbrains.kotlin.fir.types.ConeKotlinType
 import org.jetbrains.kotlin.fir.types.coneTypeOrNull
@@ -82,8 +83,8 @@ import kotlin.script.experimental.api.ScriptDiagnostic
  * The only thing that makes this fast is WHERE the session boundary sits: the project environment, the
  * [FirJvmSessionFactory.Context] and the shared + library sessions (the classpath FIR index, seconds on a
  * modpack) are built once in [warmUp] and reused, while each eval builds only a source session — provider
- * wiring, not a classpath scan. Every CLI-level entry point (`K2JVMCompiler`, `prepareJvmSessions`,
- * `KotlinToJVMBytecodeCompiler`) rebuilds all of it per call, which is why none of them appear here.
+ * wiring, not a classpath scan. Every CLI-level entry point (`K2JVMCompiler`,
+ * `JvmFrontendPipelinePhase.prepareJvmSessions`) rebuilds all of it per call, which is why neither is used here.
  */
 internal object PlainEngine {
 
@@ -152,7 +153,7 @@ internal object PlainEngine {
     }
 
     @Synchronized
-    @OptIn(K1Deprecation::class, ExperimentalCompilerApi::class)
+    @OptIn(CoreEnvironmentDeprecation::class, ExperimentalCompilerApi::class)
     fun warmUp(cpFiles: List<File>, parentApiVersion: String? = null) {
         warm?.let { return }
         // Parsed once, here: the overlay writes its rebuilt kotlin_module at this level too, and the frontend
@@ -245,7 +246,7 @@ internal object PlainEngine {
             configuration = w.configuration,
             context = w.sessionContext,
             needRegisterJavaElementFinder = true,
-            isForLeafHmppModule = false,
+            kmpModuleKind = KmpModuleKind.SingleModule,
             init = {},
         )
 
@@ -291,11 +292,8 @@ internal object PlainEngine {
         reporter: BaseDiagnosticsCollector,
         yieldTypes: Map<Pair<Int, Int>, String>,
     ): Emitted {
-        // The conversion fills this in and the backend reads it back, so both halves must hold the SAME
-        // instance — a second one arrives at codegen empty.
-        val extensions = JvmFir2IrExtensions(w.configuration)
         val fir2Ir = frontend.convertToIrAndActualizeForJvm(
-            extensions, w.configuration, reporter,
+            JvmFir2IrExtensions(), w.configuration, reporter,
             w.configuration.getCompilerExtensions(IrGenerationExtension) + YieldTypeExtension(yieldTypes),
         )
         // The resolver answers "what class is this ASM type" for the backend — value-class boxing and the
@@ -316,7 +314,7 @@ internal object PlainEngine {
             fir2Ir.pluginContext.irBuiltIns,
             fir2Ir.symbolTable,
             fir2Ir.components.irProviders,
-            extensions,
+            debuggerExtensions = null,
             FirJvmBackendExtension(
                 fir2Ir.components,
                 fir2Ir.irActualizedResult?.actualizedExpectDeclarations?.extractFirDeclarations(),

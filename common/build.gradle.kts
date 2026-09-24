@@ -1,5 +1,6 @@
 import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
 import xyz.wagyourtail.unimined.api.UniminedExtension
+import javax.inject.Inject
 
 // Unimined 1.4.1 bundles ASM 9.7.1, which throws "Unsupported class file major version 69" when it merges the
 // Minecraft 26.1+ jar (Java 25). ASM is an unshaded transitive of Unimined, so apply Unimined via buildscript{}
@@ -77,7 +78,7 @@ configure<UniminedExtension> {
 
 dependencies {
     compileOnly("org.spongepowered:mixin:0.8.7")
-    testImplementation("org.jetbrains.kotlin:kotlin-test:2.4.10")
+    testImplementation("org.jetbrains.kotlin:kotlin-test:2.4.20")
 }
 
 // Consumable side of common's source injection into each loader (java / resources / kotlin dirs). The loaders'
@@ -109,9 +110,13 @@ artifacts {
 // already carries under the very names we are relocating TO.
 //
 // Versions are not free choices. The -for-ide jars and kotlin-compiler-embeddable are built from one Kotlin
-// source tree against one `:dependencies:intellij-core`, so both must be 2.4.10; intellij.platform:util must be
-// the intellijSdk that 2.4.10's gradle/versions.properties pins (251.27812.49).
+// source tree against one `:dependencies:intellij-core`, so all of them must be the same Kotlin version, and
+// intellij.platform:util must be the intellijSdk that version's gradle/versions.properties pins.
 configurations.create("analysisApiRaw") {
+    isCanBeConsumed = false
+    isCanBeResolved = true
+}
+configurations.create("analysisApiDecompiler") {
     isCanBeConsumed = false
     isCanBeResolved = true
 }
@@ -125,7 +130,7 @@ dependencies {
         "analysis-api-standalone-for-ide",
         "low-level-api-fir-for-ide",
         "symbol-light-classes-for-ide",
-    ).forEach { "analysisApiRaw"("org.jetbrains.kotlin:$it:2.4.10") { isTransitive = false } }
+    ).forEach { "analysisApiRaw"("org.jetbrains.kotlin:$it:2.4.20") { isTransitive = false } }
     // Fills the Kotlin-authored platform facades intellij-core omits; ordered after the jars above. `util` alone
     // is not enough — ArrayUtil, CollectionFactory, FileUtilRt and friends live in its siblings, and without them
     // those calls link against intellij-core's thinner namesakes and throw NoSuchMethodError on first use.
@@ -134,6 +139,15 @@ dependencies {
     // util-base's CollectionFactory links against the full fastutil; embeddable's shaded copy is minimized to
     // its own thinner one's needs and lacks eight of them. Also the it.unimi.dsi.fastutil relocation's only input.
     "analysisApiRaw"("org.jetbrains.intellij.deps.fastutil:intellij-deps-fastutil:8.5.18-jb1") { isTransitive = false }
+    // Standalone reads library binaries through the decompiler, which neither embeddable nor the jars above carry.
+    // Its only published home also repeats most of embeddable, so relocateAnalysisApi takes just the decompiler.
+    "analysisApiDecompiler"("org.jetbrains.kotlin:kotlin-compiler-common-for-ide:2.4.20") { isTransitive = false }
+}
+
+/** zipTree for lazily resolved inputs: the script's own would capture the script, which the configuration cache rejects. */
+interface Archives {
+    @get:Inject
+    val operations: ArchiveOperations
 }
 
 // Same tool and same rules Kotlin builds compiler-embeddable with (repo/gradle-build-conventions/
@@ -144,6 +158,10 @@ val relocateAnalysisApi = tasks.register<ShadowJar>("relocateAnalysisApi") {
     description = "Relocates the Analysis API into kotlin-compiler-embeddable's shaded namespace."
     group = "build"
     configurations.set(listOf(project.configurations["analysisApiRaw"]))
+    val archives = objects.newInstance<Archives>().operations
+    from(project.configurations["analysisApiDecompiler"].elements.map { jars -> jars.map { archives.zipTree(it.asFile) } }) {
+        include("org/jetbrains/kotlin/analysis/decompiler/**", "org/jetbrains/kotlin/analysis/decompiled/**")
+    }
     destinationDirectory.set(layout.buildDirectory.dir("mcp-analysis"))
     archiveFileName.set("analysis-api-relocated.jar")
 

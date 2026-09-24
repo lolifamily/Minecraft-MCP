@@ -11,7 +11,7 @@ plugins {
 // KotlinCompile directly, and buildSrc's classpath is the one classloader every subproject shares — so all four get
 // a SINGLE plugin load, no "plugin loaded multiple times in different subprojects" warning. Subprojects declare it
 // with no version. (`kotlin-dsl` applies Gradle's embedded Kotlin only to compile buildSrc; the mod's own kotlin
-// is this 2.4.10.)
+// is the one declared below.)
 repositories {
     gradlePluginPortal()
     mavenCentral()
@@ -28,7 +28,7 @@ dokka {
 }
 
 dependencies {
-    implementation("org.jetbrains.kotlin:kotlin-gradle-plugin:2.4.10")
+    implementation("org.jetbrains.kotlin:kotlin-gradle-plugin:2.4.20")
     // Dokka — same buildSrc-classpath route as the Kotlin plugin above, so the multiloader-common convention's
     // `plugins.withId("org.jetbrains.dokka")` reacts to leaves applying it.
     implementation("org.jetbrains.dokka:dokka-gradle-plugin:2.2.0")

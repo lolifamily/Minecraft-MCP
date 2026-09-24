@@ -99,7 +99,7 @@ plugins.withId("org.jetbrains.kotlin.jvm") {
         isCanBeResolved = true
         isTransitive = false
     }
-    dependencies.add("kotlinScriptingFriend", "org.jetbrains.kotlin:kotlin-scripting-compiler-embeddable:2.4.10")
+    dependencies.add("kotlinScriptingFriend", "org.jetbrains.kotlin:kotlin-scripting-compiler-embeddable:2.4.20")
     // Kotlin bytecode target = bytecodeVersion; the toolchain stays at java_version.
     tasks.withType<KotlinCompile>().configureEach {
         compilerOptions {
@@ -108,6 +108,9 @@ plugins.withId("org.jetbrains.kotlin.jvm") {
             // fabric.mod.json require only FLK >= 1.11.0.
             languageVersion.set(org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_2_0)
             apiVersion.set(org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_2_0)
+            // 2.0 is deprecated, and pinned on purpose, so its warning says nothing new. Once it is unsupported
+            // the compiler errors regardless of this flag.
+            freeCompilerArgs.add("-Xsuppress-version-warnings")
             // -Xfriend-paths resolved lazily (config resolves at execution, not configuration time).
             freeCompilerArgs.add(
                 friendCfg.elements.map { locs -> "-Xfriend-paths=" + locs.joinToString(",") { it.asFile.absolutePath } }
@@ -179,7 +182,7 @@ repositories {
 
 dependencies {
 
-    // ══ DO NOT BUMP kotlin 2.4.10 OR byte-buddy 1.18.14 AS A ROUTINE DEPENDENCY UPDATE ══
+    // ══ DO NOT BUMP kotlin 2.4.20 OR byte-buddy 1.18.14 AS A ROUTINE DEPENDENCY UPDATE ══
     //
     // The two have nothing to do with each other. Each is pinned on its own, for the same reason: THIS CODE
     // REACHES DEEP INTO THAT LIBRARY'S INTERNALS — unstable, undocumented API that moves in patch releases.
@@ -205,9 +208,9 @@ dependencies {
     // live ONLY on the self-managed masking loader, never on the game/module classpath. Embeddable variants, to
     // match the runtime jars staged into mcp-kotlin. Of the scripting stack only two survive: `ScriptDiagnostic`
     // out of scripting-common, and the script IR lowering plus a few reporting helpers out of the plugin.
-    compileOnly("org.jetbrains.kotlin:kotlin-scripting-common:2.4.10")
-    compileOnly("org.jetbrains.kotlin:kotlin-scripting-compiler-embeddable:2.4.10")
-    compileOnly("org.jetbrains.kotlin:kotlin-compiler-embeddable:2.4.10")
+    compileOnly("org.jetbrains.kotlin:kotlin-scripting-common:2.4.20")
+    compileOnly("org.jetbrains.kotlin:kotlin-scripting-compiler-embeddable:2.4.20")
+    compileOnly("org.jetbrains.kotlin:kotlin-compiler-embeddable:2.4.20")
 
     // ByteBuddy (core-vs-agent split: see mcp.McpRun). Compile-only here; each loader puts them on its own
     // runtime classpath. The bootstrap bridge is compile-only everywhere.
@@ -227,7 +230,7 @@ dependencies {
     compileOnly("org.ow2.asm:asm-tree") { version { prefer("9.10.1") } }
     // Kotlin private/protected access: the access-widen overlay (CompileClasspath.widenClassFile) flips the visibility in each
     // Kotlin class's @Metadata proto. kotlin-metadata-jvm is the stable read/modify/write API for that.
-    compileOnly("org.jetbrains.kotlin:kotlin-metadata-jvm:2.4.10")
+    compileOnly("org.jetbrains.kotlin:kotlin-metadata-jvm:2.4.20")
     // Forge Mixed SRG: RemapCacheBuilder.tsrgProvider reads forge's TSRG2 via mapping-io (tiny-remapper's
     // own transitive dep, runtime scope, so declare it explicitly for compile).
     compileOnly("net.fabricmc:mapping-io:0.9.1")

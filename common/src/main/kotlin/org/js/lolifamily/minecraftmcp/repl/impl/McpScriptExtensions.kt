@@ -58,12 +58,13 @@ internal class McpScriptConfigurator(session: FirSession) : FirScriptConfigurato
     override fun accepts(sourceFile: KtSourceFile?, scriptSource: KtSourceElement): Boolean = sourceFile?.name?.endsWith(SCRIPT_EXT) == true
 
     override fun FirScriptBuilder.configure(sourceFile: KtSourceFile?, context: Context<*>) {
+        val receiverIndex = receivers.size
         receivers.add(
             buildScriptReceiverParameter {
                 // A user type ref: the TYPES phase resolves it exactly like a type the user wrote, and the
                 // name is fully qualified so nothing about the snippet's own imports can shadow it.
                 typeRef = buildUserTypeRef {
-                    source = this@configure.source.fakeElement(KtFakeSourceElementKind.ScriptParameter)
+                    source = this@configure.source.fakeElement(KtFakeSourceElementKind.ScriptParameter.ImplicitReceiver(receiverIndex))
                     isMarkedNullable = false
                     FqName(SCRIPT_SCOPE).pathSegments().mapTo(qualifier) {
                         FirQualifierPartImpl(null, it, FirTypeArgumentListImpl(null))
@@ -110,7 +111,7 @@ internal class McpScriptConfigurator(session: FirSession) : FirScriptConfigurato
                 initializer = lastExpression
                 returnTypeRef = resultTypeRef
                 getter = FirDefaultPropertyGetter(
-                    source = lastBlock.source?.fakeElement(KtFakeSourceElementKind.DefaultAccessor),
+                    source = lastBlock.source?.fakeElement(KtFakeSourceElementKind.DefaultAccessor.Getter),
                     moduleData = session.moduleData,
                     origin = FirDeclarationOrigin.ScriptCustomization.ResultProperty,
                     propertyTypeRef = resultTypeRef,

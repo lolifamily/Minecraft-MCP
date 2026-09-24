@@ -118,15 +118,15 @@ dependencies {
     // -PnoKotlinJij skips the kotlin pair, leaving it to the platform's provider — deliberately without declaring
     // a dependency on it in exchange.
     if (!providers.gradleProperty("noKotlinJij").isPresent) {
-        "jarJar"("org.jetbrains.kotlin:kotlin-stdlib:2.4.10") {
-            jarJarExt.configure(this) { setVersion("2.4.10") }
+        "jarJar"("org.jetbrains.kotlin:kotlin-stdlib:2.4.20") {
+            jarJarExt.configure(this) { setVersion("2.4.20") }
             // Drop annotations (kotlin-stdlib's transitive) — its module clashes with MC's on forge's module path.
             exclude(group = "org.jetbrains", module = "annotations")
         }
         // kotlin-reflect too: kotlin reflection resolves its impl through the stdlib's OWN loader, so reflect must
         // sit on the SAME loader as stdlib — a stdlib-only game loader breaks reflection (see MaskingClassLoader).
-        "jarJar"("org.jetbrains.kotlin:kotlin-reflect:2.4.10") {
-            jarJarExt.configure(this) { setVersion("2.4.10") }
+        "jarJar"("org.jetbrains.kotlin:kotlin-reflect:2.4.20") {
+            jarJarExt.configure(this) { setVersion("2.4.20") }
             exclude(group = "org.jetbrains", module = "annotations")
         }
     }

@@ -128,16 +128,19 @@ internal fun Metadata.fieldOr(name: String, fallback: Any?): Any? {
 @Suppress("OPT_IN_USAGE_ERROR", "OPT_IN_USAGE")
 internal class KmRemap(private val r: Remapper) {
 
-    /** Rename [c]'s own name, its supertypes, constructors and every member. */
+    /** Rename [c]'s own name, its annotations, supertypes, constructors, enum entries and every member. */
     fun rename(c: KmClass) {
         // Read BEFORE c.name moves: member lookups key on the owner in the SOURCE namespace, and renaming the
         // class first would hand every member below a name the tables have never heard of.
         val owner = c.name.replace('.', '$')
         mapClassName(c.name)?.let { c.name = it }
+        c.annotations.replaceAll(::renameAnnotation)
         c.supertypes.forEach { renameType(it) }
         c.inlineClassUnderlyingType?.let { renameType(it) }
         renameTypeParams(c.typeParameters)
+        c.kmEnumEntries.forEach { it.annotations.replaceAll(::renameAnnotation) }
         c.constructors.forEach { ctor ->
+            ctor.annotations.replaceAll(::renameAnnotation)
             renameParams(ctor.valueParameters)
             // Name left alone on purpose: a constructor is `<init>` in both namespaces, and no table has a row
             // for it — asking would cost a lookup to be told what we already know.
@@ -167,6 +170,8 @@ internal class KmRemap(private val r: Remapper) {
         locals: List<KmProperty>,
     ) {
         fns.forEach { f ->
+            f.annotations.replaceAll(::renameAnnotation)
+            f.extensionReceiverParameterAnnotations.replaceAll(::renameAnnotation)
             renameType(f.returnType)
             f.receiverParameterType?.let { renameType(it) }
             renameParams(f.valueParameters)
@@ -185,6 +190,10 @@ internal class KmRemap(private val r: Remapper) {
     }
 
     private fun renameProperty(owner: String, p: KmProperty) {
+        listOfNotNull(
+            p.annotations, p.getter.annotations, p.setter?.annotations, p.backingFieldAnnotations,
+            p.delegateFieldAnnotations, p.extensionReceiverParameterAnnotations,
+        ).forEach { it.replaceAll(::renameAnnotation) }
         renameType(p.returnType)
         p.receiverParameterType?.let { renameType(it) }
         p.setterParameter?.let { renameParams(listOf(it)) }
@@ -229,6 +238,7 @@ internal class KmRemap(private val r: Remapper) {
     }
 
     private fun renameParams(ps: List<KmValueParameter>) = ps.forEach { p ->
+        p.annotations.replaceAll(::renameAnnotation)
         renameType(p.type)
         p.varargElementType?.let { renameType(it) }
     }
@@ -238,8 +248,8 @@ internal class KmRemap(private val r: Remapper) {
         p.annotations.replaceAll(::renameAnnotation)
     }
 
-    /** A type-use annotation has nowhere to live in the class file, so the proto is its only carrier — and its
-     *  ARGUMENTS name classes just as its own type does. */
+    /** The proto keeps annotations of its own: type-use ones live nowhere else, and the compiler reads declaration
+     *  ones from here in preference to the class file. Their ARGUMENTS name classes just as their own type does. */
     private fun renameAnnotation(a: KmAnnotation) =
         KmAnnotation(mapClassName(a.className) ?: a.className, a.arguments.mapValues { renameArgument(it.value) })
 

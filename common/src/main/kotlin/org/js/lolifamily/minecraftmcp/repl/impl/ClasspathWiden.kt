@@ -270,7 +270,7 @@ private val ALIGNMENT = java.util.concurrent.ConcurrentHashMap<String, String>()
  * the metadata proto — so a jar whose published member names were renamed without updating that field links
  * against a method that does not exist, and it fails at the call site rather than at compile time. The
  * JvmMethodSignature is renamed correctly, which makes it the reference. Aligned jars stop at the comparison;
- * as of 2.4.10 only kotlin-metadata-jvm needs the rewrite.
+ * as of 2.4.20 only kotlin-metadata-jvm needs the rewrite.
  */
 private fun alignModuleName(current: String?, fns: List<KmFunction>, props: List<KmProperty>, set: (String) -> Unit): Boolean {
     // `NameUtils.sanitizeAsJavaIdentifier`'s rule: every char that is not a letter or digit becomes `_`.

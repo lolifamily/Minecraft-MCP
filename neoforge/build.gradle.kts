@@ -65,13 +65,13 @@ dependencies {
     // deps through runtimeOnly there. Referenced by name (string-invoke) not accessor: on unobf nodes the config
     // doesn't exist, so a generated accessor wouldn't compile even in this dead branch.
     if (!unobf) {
-        "additionalRuntimeClasspath"("org.jetbrains.kotlin:kotlin-stdlib:2.4.10")
-        "additionalRuntimeClasspath"("org.jetbrains.kotlin:kotlin-reflect:2.4.10")
+        "additionalRuntimeClasspath"("org.jetbrains.kotlin:kotlin-stdlib:2.4.20")
+        "additionalRuntimeClasspath"("org.jetbrains.kotlin:kotlin-reflect:2.4.20")
         "additionalRuntimeClasspath"("net.bytebuddy:byte-buddy:1.18.14")
         "additionalRuntimeClasspath"("net.bytebuddy:byte-buddy-agent:1.18.14")
     } else {
-        runtimeOnly("org.jetbrains.kotlin:kotlin-stdlib:2.4.10")
-        runtimeOnly("org.jetbrains.kotlin:kotlin-reflect:2.4.10")
+        runtimeOnly("org.jetbrains.kotlin:kotlin-stdlib:2.4.20")
+        runtimeOnly("org.jetbrains.kotlin:kotlin-reflect:2.4.20")
         runtimeOnly("net.bytebuddy:byte-buddy:1.18.14")
         runtimeOnly("net.bytebuddy:byte-buddy-agent:1.18.14")
     }
@@ -81,8 +81,8 @@ dependencies {
     // -PnoKotlinJij skips these, leaving kotlin to the platform's provider — deliberately without declaring a
     // dependency on it in exchange.
     if (!providers.gradleProperty("noKotlinJij").isPresent) {
-        jarJar("org.jetbrains.kotlin:kotlin-stdlib") { version { strictly("2.4.10") } }
-        jarJar("org.jetbrains.kotlin:kotlin-reflect") { version { strictly("2.4.10") } }
+        jarJar("org.jetbrains.kotlin:kotlin-stdlib") { version { strictly("2.4.20") } }
+        jarJar("org.jetbrains.kotlin:kotlin-reflect") { version { strictly("2.4.20") } }
     }
     jarJar("net.bytebuddy:byte-buddy") { version { strictly("1.18.14") } }
     jarJar("net.bytebuddy:byte-buddy-agent") { version { strictly("1.18.14") } }

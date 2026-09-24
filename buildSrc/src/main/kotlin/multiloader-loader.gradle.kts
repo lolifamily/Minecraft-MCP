@@ -53,14 +53,14 @@ dependencies {
     "commonResources"(project(mapOf("path" to ":common", "configuration" to "commonResources")))
     "commonKotlin"(project(mapOf("path" to ":common", "configuration" to "commonKotlin")))
     "bridgeJar"(project(":bridge"))
-    // 2.4.10 is required for execute_code compilation on a Java 25+ runtime.
-    "mcpKotlin"("org.jetbrains.kotlin:kotlin-scripting-jvm-host:2.4.10") {
+    // execute_code on a Java 25+ runtime needs 2.4.10 or newer.
+    "mcpKotlin"("org.jetbrains.kotlin:kotlin-scripting-jvm-host:2.4.20") {
         // compiler-embeddable declares it for the CLI daemon path; an in-process host never reaches it.
         exclude(group = "org.jetbrains.kotlin", module = "kotlin-daemon-embeddable")
     }
-    // kotlin-compiler-embeddable:2.4.10 drags in its BOOTSTRAP kotlin-reflect (1.6.10) transitively — a version skew
-    // against the 2.4.10 stdlib. Pin reflect to 2.4.10; Gradle's highest-version conflict resolution evicts 1.6.10.
-    "mcpKotlin"("org.jetbrains.kotlin:kotlin-reflect:2.4.10")
+    // kotlin-compiler-embeddable drags in its BOOTSTRAP kotlin-reflect (1.6.10) transitively — a version skew against
+    // the stdlib. Pin reflect to the stdlib's version; Gradle's highest-version conflict resolution evicts 1.6.10.
+    "mcpKotlin"("org.jetbrains.kotlin:kotlin-reflect:2.4.20")
     // tiny-remapper (+ asm + mapping-io transitively) for runtime mojmap->intermediary remap of compiled script
     // bytecode on non-mojmap production runtimes. Staged into build/mcp-kotlin alongside the scripting stack.
     "mcpKotlin"("net.fabricmc:tiny-remapper:0.14.1") {
@@ -69,7 +69,7 @@ dependencies {
     }
     // Kotlin private/protected access: kotlin-metadata-jvm read/modify/writes the @Metadata visibility in the
     // access-widen overlay (see CompileClasspath.widenClassFile). Masking-loader tool lib, rides in mcp-kotlin.
-    "mcpKotlin"("org.jetbrains.kotlin:kotlin-metadata-jvm:2.4.10")
+    "mcpKotlin"("org.jetbrains.kotlin:kotlin-metadata-jvm:2.4.20")
     // The Analysis API, relocated by :common into compiler-embeddable's namespace. Compile-only for the same
     // reason as the compiler above (this loader re-compiles common's injected sources), and staged into
     // mcp-kotlin so the masking loader picks it up with no loader-side change.
