@@ -81,7 +81,7 @@ dependencies {
     "mcpKotlin"("org.jetbrains.kotlinx:kotlinx-serialization-json-jvm:1.11.0")
     // The Analysis API's cache layer links against caffeine; no -for-ide jar carries one. Both raw-named: neither
     // belongs in relocateAnalysisApi.
-    "mcpKotlin"("com.github.ben-manes.caffeine:caffeine:3.2.4")
+    "mcpKotlin"("com.github.ben-manes.caffeine:caffeine:3.3.0")
 }
 
 tasks.named<JavaCompile>("compileJava") {

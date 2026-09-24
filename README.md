@@ -214,8 +214,10 @@ Evaluate Kotlin inside the running game. The **last expression is the return val
   is driven one step per tick, cooperatively, and each `v` is reported the way a returned value is. `yield(Unit)`
   only waits.
 - **No timeout, cancellation instead.** A call blocks until the eval finishes; a JSON-RPC
-  `notifications/cancelled` ends it immediately with its partial output. (A never-yielding `while (true)` is
-  the watchdog's job, not this call's.)
+  `notifications/cancelled` ends it immediately with its partial output. Hanging up ends it too, within about
+  two seconds: the reply's headers go out before the eval runs, and while it runs one space goes ahead of the
+  JSON every second — whitespace any JSON parser skips — so the first one that cannot be written cancels it.
+  (A never-yielding `while (true)` is the watchdog's job, not this call's.)
 
 Two things **persist across evals** (pre-imported, no `import` needed):
 
@@ -360,10 +362,10 @@ dimensions, and the only party who could pick a number is a model with no idea w
 One watchdog budget per pump, shared by every eval stepped in it. `client` and `render` run on the same
 thread and share one watchdog.
 
-An eval runs until it finishes, throws, trips the watchdog, or you cancel it: unloading a world, changing
-dimension or switching servers does **not** stop it, so a script can watch a teardown happen. Two things do
-end one early — an authorization revoke, and (on `server`) the local server stopping, past which nothing
-would step it again — both with a "killed" result and its partial output. `parallel` evals stop on
+An eval runs until it finishes, throws, trips the watchdog, or you cancel it (hanging up counts): unloading a
+world, changing dimension or switching servers does **not** stop it, so a script can watch a teardown happen.
+Two things do end one early — an authorization revoke, and (on `server`) the local server stopping, past which
+nothing would step it again — both with a "killed" result and its partial output. `parallel` evals stop on
 cancellation, an authorization revoke, or JVM exit.
 
 ## Configuration
@@ -585,15 +587,16 @@ instead of one aggregate.
 there rather than keeping a second, worse copy:
 
 - **A server-side execution timeout.** The model already chooses how long to wait, and a client that gives up
-  sends `notifications/cancelled`, which ends the eval and returns its partial output. That path is handled
-  here; a timer on this side could only disagree with it. `execute_code` only — the other two block on the
-  game thread and end when it answers.
+  sends `notifications/cancelled`, which ends the eval and returns its partial output — or just hangs up,
+  which ends it too. Both are handled here; a timer on this side could only disagree with them. `execute_code`
+  only — the other two block on the game thread and end when it answers.
 - **A `cancel` tool.** Not the model's to reach for: `execute_code` has not returned, so it handed back no id
   to name, and the model is blocked on the very result it would need to decide the call is stuck. Parallel
   calls do not help — a turn emits them together, before any of them answers. Giving it something to name
   means returning a handle up front and making every eval a poll, which is a different and worse tool. What
   can act mid-call is the harness — a user interrupt, a client-side deadline — and it already has
-  `notifications/cancelled`; one too dead to send that is too dead to call a tool.
+  `notifications/cancelled`; one too dead to send that is too dead to call a tool, and the connection it drops
+  ends the eval anyway.
 - **Truncating long output.** Real problem, wrong layer. Cutting here either drops the result or spills it to
   a file outside the agent's managed scope — never auto-cleaned, and reading it back can raise a permission
   prompt. Only the client knows its own context budget. A model can also keep the output small at the source,

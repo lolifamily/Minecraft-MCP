@@ -7,20 +7,14 @@ plugins {
     id("io.github.ben-manes.versions")
 }
 
-// GA/stable candidates only — ben-manes has no built-in flag; this is its README's snippet.
-fun isNonStable(version: String): Boolean {
-    val stableKeyword = listOf("RELEASE", "FINAL", "GA").any { version.uppercase().contains(it) }
-    val regex = "^[0-9,.v-]+(-r)?$".toRegex()
-    return !stableKeyword && !version.matches(regex)
-}
-
 // Dependency-update reporter. Usage: ./gradlew dependencyUpdates --no-parallel --no-configuration-cache — it
 // resolves other projects' configurations at execution time with no ordering edge, and reaches Task.project.
 tasks.named<DependencyUpdatesTask>("dependencyUpdates").configure {
-    gradleReleaseChannel = "current"   // Gradle self-check: GA only, not the -rc line
-    // Reject an unstable candidate only when the CURRENT version is stable — so a project already pinned to
-    // an unstable version (loom 1.17-SNAPSHOT) still surfaces its updates instead of going mute.
-    rejectVersionIf { isNonStable(candidate.version) && !isNonStable(currentVersion) }
+    // Built-in since 0.64.0, marker-based (alpha/beta/rc/snapshot...): drops a pre-release candidate only while the
+    // CURRENT version is a release, so loom 1.17-SNAPSHOT still surfaces its updates; also defaults
+    // gradleReleaseChannel to "current". NOT a rejectVersionIf calling a helper declared in this script: that lambda
+    // captures the script object, and 0.64.0 then withholds the root report from the configuration cache.
+    rejectPreReleases = true
 }
 
 // Without this javac follows the build jvm's default charset, and our .java sources hold non-ASCII.
@@ -58,8 +52,8 @@ plugins.withId("java") {
     configure<CheckstyleExtension> {
         // MUST pin: Gradle's DEFAULT_CHECKSTYLE_VERSION is 10.24.0, but checkstyle.xml is from
         // checkstyle master (SWITCH_RULE / LITERAL_WHEN tokens, TextBlockGoogleStyleFormatting)
-        // which 10.x cannot load -> "Unable to create Root Module". 14.0.0 = matching release.
-        toolVersion = "14.0.0"
+        // which 10.x cannot load -> "Unable to create Root Module". 14.0.0 was the first matching release.
+        toolVersion = "14.1.0"
         configFile = layout.settingsDirectory.file("checkstyle.xml").asFile
         // google_checks reports every violation at severity=warning and Gradle only fails on errors, so
         // without this the linter is advisory and nothing it finds ever blocks a build.

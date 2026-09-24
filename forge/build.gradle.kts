@@ -110,8 +110,8 @@ dependencies {
     // ByteBuddy (core-vs-agent split: see mcp.McpRun). Compile comes from multiloader-common's compileOnly, so the
     // leaf only needs the RUNTIME half for DEV runs → runtimeOnly. jarJar below carries both into the production
     // jar; a real server gets them from there, not from this dev-only config.
-    runtimeOnly("net.bytebuddy:byte-buddy:1.18.12")
-    runtimeOnly("net.bytebuddy:byte-buddy-agent:1.18.12")
+    runtimeOnly("net.bytebuddy:byte-buddy:1.18.14")
+    runtimeOnly("net.bytebuddy:byte-buddy-agent:1.18.14")
 
     // Packaging: jar-in-jar for production-only runtime libs. byte-buddy-agent stays an intact nested jar
     // (manifest Agent-Class unchanged) so self-attach works.
@@ -130,8 +130,8 @@ dependencies {
             exclude(group = "org.jetbrains", module = "annotations")
         }
     }
-    "jarJar"("net.bytebuddy:byte-buddy:1.18.12") { jarJarExt.configure(this) { setVersion("1.18.12") } }
-    "jarJar"("net.bytebuddy:byte-buddy-agent:1.18.12") { jarJarExt.configure(this) { setVersion("1.18.12") } }
+    "jarJar"("net.bytebuddy:byte-buddy:1.18.14") { jarJarExt.configure(this) { setVersion("1.18.14") } }
+    "jarJar"("net.bytebuddy:byte-buddy-agent:1.18.14") { jarJarExt.configure(this) { setVersion("1.18.14") } }
 }
 
 // The renamer supplies the official→srg mappings the mixin AP needs, plus the whole-jar reobf.

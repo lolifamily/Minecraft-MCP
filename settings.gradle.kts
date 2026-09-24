@@ -14,7 +14,7 @@ pluginManagement {
     // (common's own buildscript{}) are deliberately absent — see those files. A plugin listed BOTH here and on the
     // buildSrc classpath loads twice, and the second scope dies with "No service of type ClassLoaderScope".
     plugins {
-        id("net.neoforged.moddev") version "2.0.144"
+        id("net.neoforged.moddev") version "2.0.147"
     }
 }
 

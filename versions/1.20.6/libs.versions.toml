@@ -1,7 +1,7 @@
 # Version numbers for MC 1.20.6 — the `mc` catalog.
 [versions]
 minecraft = "1.20.6"
-forge = "50.2.1"
+forge = "50.2.0"
 neoforge = "20.6.139"
 fabricLoader = "0.16.9"
 parchment = "2024.06.16"

@@ -1,10 +1,11 @@
 import net.fabricmc.loom.api.LoomGradleExtensionAPI
 
 // Fabric Loom is applied via buildscript{} + apply(plugin=...) (NOT the plugins{} DSL) because its plugin id
-// switches at the DEOBFUSCATION boundary: net.fabricmc.fabric-loom (no-remap) for MC 26.1+ vs classic
-// fabric-loom for ≤1.21 — and the restricted plugins{} DSL can't branch a plugin id. Because it's applied (not in
-// plugins{}), Loom's configurations get no generated kts accessors, so minecraft/mappings/modImplementation/include
-// are addressed by name (string-invoke) and the extension via configure<LoomGradleExtensionAPI>.
+// switches at the DEOBFUSCATION boundary: net.fabricmc.fabric-loom (no-remap) for MC 26.1+ vs
+// net.fabricmc.fabric-loom-remap for ≤1.21 — and the restricted plugins{} DSL can't branch a plugin id. Because it's
+// applied (not in plugins{}), Loom's configurations get no generated kts accessors, so
+// minecraft/mappings/modImplementation/include are addressed by name (string-invoke) and the extension via
+// configure<LoomGradleExtensionAPI>.
 //
 // Both eras share ONE artifact (net.fabricmc:fabric-loom) at the SAME version, so it's a plain constant here;
 // only the plugin ID differs, chosen below from the node's `unobfuscated` flag.
@@ -15,7 +16,7 @@ buildscript {
         mavenCentral()
     }
     dependencies {
-        classpath("net.fabricmc:fabric-loom:1.17-SNAPSHOT")
+        classpath("net.fabricmc:fabric-loom:1.18-SNAPSHOT")
     }
 }
 
@@ -32,7 +33,7 @@ val modId = providers.gradleProperty("mod_id").get()
 // (no mappings, plain `jar`); ≤1.21 stays obfuscated (mappings + remapJar). Branches the loom apply (id), and the
 // dependency/mixin blocks below.
 val unobf = mcpVersions.flag("unobfuscated").get()
-apply(plugin = if (unobf) "net.fabricmc.fabric-loom" else "fabric-loom")
+apply(plugin = if (unobf) "net.fabricmc.fabric-loom" else "net.fabricmc.fabric-loom-remap")
 val loom = the<LoomGradleExtensionAPI>()
 
 // Run JVM args: shared values via mcp.McpRun.jvmArgs; only replClassesDir differs. fabric's Kotlin classes
@@ -64,13 +65,13 @@ dependencies {
 
     // ByteBuddy (core-vs-agent split: see mcp.McpRun). Compile comes from multiloader-common's compileOnly; the
     // DEV run needs them at runtime → runtimeOnly (loom's run classpath includes runtimeOnly).
-    runtimeOnly("net.bytebuddy:byte-buddy:1.18.12")
-    runtimeOnly("net.bytebuddy:byte-buddy-agent:1.18.12")
+    runtimeOnly("net.bytebuddy:byte-buddy:1.18.14")
+    runtimeOnly("net.bytebuddy:byte-buddy-agent:1.18.14")
     // Bundle both into the mod jar (jar-in-jar). dev loom puts `implementation` deps on the game classpath; a
     // production server does not, so without this the shipped mod has no ByteBuddy at all and both the friend
     // weave and the patch engine die. (Lane heartbeats do NOT — they are Mixins, not patches.)
-    "include"("net.bytebuddy:byte-buddy:1.18.12")
-    "include"("net.bytebuddy:byte-buddy-agent:1.18.12")
+    "include"("net.bytebuddy:byte-buddy:1.18.14")
+    "include"("net.bytebuddy:byte-buddy-agent:1.18.14")
 
     // Kotlin runtime, as on forge/neoforge. Loom's generated id (org_jetbrains_kotlin_*) is the one FLK's own
     // nested copies carry, so a pack with FLK dedups by id instead of loading both.

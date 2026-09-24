@@ -36,7 +36,7 @@ dependencies {
     // DetektExtension directly. The rule for all three: on this classpath AND out of settings.gradle.kts's
     // pluginManagement — listed in both, a plugin loads twice and the second scope dies with
     // "No service of type ClassLoaderScope". None of them drags a kotlin-gradle-plugin of its own.
-    implementation("io.github.ben-manes:gradle-versions-plugin:0.58.0")
+    implementation("io.github.ben-manes:gradle-versions-plugin:0.64.0")
     implementation("org.jlleitschuh.gradle:ktlint-gradle:14.2.0")
     // 2.0.0-alpha line (new plugin id 'dev.detekt'): stable 1.23.8 rejects our JDK-25 build's --jvm-target 25.
     implementation("dev.detekt:detekt-gradle-plugin:2.0.0-alpha.6")

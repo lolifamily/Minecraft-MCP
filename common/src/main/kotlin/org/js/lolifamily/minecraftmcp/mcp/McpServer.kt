@@ -37,6 +37,8 @@ import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicInteger
 
 /** `isString`, not `isJsonPrimitive`: gson's `asString` stringifies a number or boolean and cannot be told not
@@ -66,6 +68,23 @@ private fun idKey(id: JsonElement?): String = if (id == null || id.isJsonNull) "
 private fun notReady(target: String): String = "$target lane not ready. Ready targets: ${Lanes.readyTargets()}."
 
 /**
+ * [eval]'s outcome, writing a space every second meanwhile: whitespace before the JSON is harmless, and a write is
+ * the only thing that notices a hangup — as the [IOException] it throws. [ex] is null for a notification.
+ */
+private fun await(eval: EvalHandle, ex: HttpExchange?): Outcome {
+    val future = eval.future()
+    while (ex != null && !future.isDone) {
+        try {
+            future.get(1, TimeUnit.SECONDS)
+        } catch (_: TimeoutException) {
+            ex.responseBody.write(' '.code)
+            ex.responseBody.flush()
+        }
+    }
+    return future.get()
+}
+
+/**
  * The single MCP endpoint the mod exposes: Streamable HTTP, bound to loopback, Bearer-token gated.
  * Three tools: `execute_code` (runs Kotlin inside the running game via [ReplBridge]), `run_command` (runs a
  * Minecraft command) and `take_screenshot` (the client's framebuffer, as an image).
@@ -74,9 +93,10 @@ private fun notReady(target: String): String = "$target lane not ready. Ready ta
  * but `initialize` and scopes cancellation. Issued ids are deliberately NOT recorded: one that outlived a game
  * restart still works, where the spec's 404-unknown-session would send the model back through `initialize` and
  * cost it its conversation context and its prompt cache. `execute_code` submits to an execution lane and blocks
- * this thread on the eval's future while the lane steps it. The safety model: loopback-only bind, a constant-time
- * compare of the one credential the request carried — `Authorization: Bearer <token>` or `?token=<token>`,
- * never both ([Auth]) — and [reject], which answers nothing at all to anything that is not a plausible client.
+ * this thread on the eval's future while the lane steps it, writing a space ahead of the reply every second so a
+ * hangup cancels the eval. The safety model: loopback-only bind, a constant-time compare of the one credential the
+ * request carried — `Authorization: Bearer <token>` or `?token=<token>`, never both ([Auth]) — and [reject], which
+ * answers nothing at all to anything that is not a plausible client.
  *
  * Gson and the JDK's `com.sun.net.httpserver` both ship with the game — no new dependency, and no JVM flag
  * (see the README's JVM-flags section).
@@ -229,18 +249,13 @@ class McpServer private constructor() {
                 sendJson(ex, 400, error(req.get("id"), -32600, "Mcp-Session-Id required — send the one initialize returned"))
                 return
             }
-            val response = dispatch(req, reqSession)
-            if (response == null) {
-                sendEmpty(ex, 202) // notification: accepted, no body
-            } else {
-                // Minted, not recorded: the next request's id is taken as it arrives.
-                if (isInitialize) {
-                    ex.responseHeaders.add("Mcp-Session-Id", UUID.randomUUID().toString())
-                }
-                sendJson(ex, 200, response)
-            }
+            sendHeaders(ex, req.get("id"), isInitialize)
+            // Null when nothing more is owed: a notification, or a request whose client execute_code found gone.
+            val response = dispatch(req, reqSession, ex) ?: return
+            OutputStreamWriter(ex.responseBody, StandardCharsets.UTF_8).use { GSON.toJson(response, it) }
         } catch (t: Throwable) {
             Constants.LOG.error("[MCP] handler error", t)
+            // Reaches the client only before sendHeaders; after it, the log line above is the whole report.
             try {
                 sendJson(ex, 500, error(null, -32603, "Internal error: $t"))
             } catch (_: Throwable) {
@@ -323,12 +338,14 @@ class McpServer private constructor() {
     // ---- JSON-RPC / MCP ------------------------------------------------------------------------
 
     /**
-     * @return the JSON-RPC response object, or `null` when nothing should be sent back.
+     * @return the JSON-RPC response object, or `null` when nothing should be sent back — a notification, or a
+     * request whose client [executeCode] found gone.
      *
      * A notification is a request with no `id`, regardless of method — hence the single gate at the bottom
-     * rather than one per branch: an id-less `tools/call` must execute-but-not-reply like any other.
+     * rather than one per branch: an id-less `tools/call` must execute-but-not-reply like any other. [ex] arrives
+     * with its headers already sent ([sendHeaders]); a notification's 202 is closed, so only a request passes it on.
      */
-    private fun dispatch(req: JsonObject, reqSession: String): JsonObject? {
+    private fun dispatch(req: JsonObject, reqSession: String, ex: HttpExchange): JsonObject? {
         val id = req.get("id")
         val isNotification = id == null || id.isJsonNull
         val method = req.stringOr("method", "").orEmpty()
@@ -354,25 +371,25 @@ class McpServer private constructor() {
             }
             "ping" -> success(id, JsonObject())
             "tools/list" -> success(id, jsonObject { add("tools", toolsList()) })
-            "tools/call" -> toolsCall(id, params, reqSession)
+            "tools/call" -> toolsCall(id, params, reqSession, ex.takeUnless { isNotification })
             else -> error(id, -32601, "Method not found: $method")
         }
 
         return if (isNotification) null else result
     }
 
-    private fun toolsCall(id: JsonElement?, params: JsonObject, reqSession: String): JsonObject? {
+    private fun toolsCall(id: JsonElement?, params: JsonObject, reqSession: String, ex: HttpExchange?): JsonObject? {
         val name = params.stringOr("name", "").orEmpty()
         val args = params.objOr("arguments")
         return when (name) {
-            "execute_code" -> executeCode(id, args, reqSession)
+            "execute_code" -> executeCode(id, args, reqSession, ex)
             "run_command" -> runCommand(id, args)
             "take_screenshot" -> takeScreenshot(id)
             else -> error(id, -32602, "Unknown tool: $name")
         }
     }
 
-    private fun executeCode(id: JsonElement?, args: JsonObject, reqSession: String): JsonObject {
+    private fun executeCode(id: JsonElement?, args: JsonObject, reqSession: String, ex: HttpExchange?): JsonObject? {
         val code = args.stringOr("code", null)
             ?: return error(id, -32602, "Argument 'code' is missing or not a string")
         // Refused, not defaulted: an unreadable target must not silently pick a lane.
@@ -415,12 +432,16 @@ class McpServer private constructor() {
             throw t
         }
         val outcome: Outcome = try {
-            // No timeout: an eval ends by finishing, by client cancellation, or by the lane reaping it
-            // (server stop, authorization revoke). Cancellation COMPLETES the future (EvalTask.cancel) rather
-            // than cancelling it, so get() never raises CancellationException here.
-            handle.future().get()
+            // No timeout: an eval ends by finishing, by client cancellation, by the client hanging up (see await),
+            // or by the lane reaping it (server stop, authorization revoke). Cancellation COMPLETES the future
+            // (EvalTask.cancel) rather than cancelling it, so get() never raises CancellationException here.
+            await(handle, ex)
         } catch (e: ExecutionException) {
             Outcome("execute_code failed: ${e.cause ?: e}", true)
+        } catch (_: IOException) {
+            // The client is gone: cancel as its notifications/cancelled would, and answer nobody.
+            handle.cancel()
+            return null
         } finally {
             inflight.remove(key, handle)
         }
@@ -641,6 +662,21 @@ class McpServer private constructor() {
 
         private fun sendEmpty(ex: HttpExchange, status: Int) {
             ex.sendResponseHeaders(status, -1L)
+        }
+
+        /** Sent before the work: a notification's 202 is its whole reply, and a request's 200 does not depend on the
+         *  work — so execute_code can write while it waits ([await]). */
+        private fun sendHeaders(ex: HttpExchange, id: JsonElement?, isInitialize: Boolean) {
+            if (id == null || id.isJsonNull) {
+                sendEmpty(ex, 202) // notification: accepted, no body
+            } else {
+                // Minted, not recorded: the next request's id is taken as it arrives.
+                if (isInitialize) {
+                    ex.responseHeaders.add("Mcp-Session-Id", UUID.randomUUID().toString())
+                }
+                ex.responseHeaders.add("Content-Type", "application/json")
+                ex.sendResponseHeaders(200, 0L) // 0 => chunked
+            }
         }
     }
 }

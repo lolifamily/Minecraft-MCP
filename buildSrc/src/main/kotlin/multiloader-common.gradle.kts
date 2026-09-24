@@ -179,7 +179,7 @@ repositories {
 
 dependencies {
 
-    // ══ DO NOT BUMP kotlin 2.4.10 OR byte-buddy 1.18.12 AS A ROUTINE DEPENDENCY UPDATE ══
+    // ══ DO NOT BUMP kotlin 2.4.10 OR byte-buddy 1.18.14 AS A ROUTINE DEPENDENCY UPDATE ══
     //
     // The two have nothing to do with each other. Each is pinned on its own, for the same reason: THIS CODE
     // REACHES DEEP INTO THAT LIBRARY'S INTERNALS — unstable, undocumented API that moves in patch releases.
@@ -211,8 +211,8 @@ dependencies {
 
     // ByteBuddy (core-vs-agent split: see mcp.McpRun). Compile-only here; each loader puts them on its own
     // runtime classpath. The bootstrap bridge is compile-only everywhere.
-    compileOnly("net.bytebuddy:byte-buddy:1.18.12")
-    compileOnly("net.bytebuddy:byte-buddy-agent:1.18.12")
+    compileOnly("net.bytebuddy:byte-buddy:1.18.14")
+    compileOnly("net.bytebuddy:byte-buddy-agent:1.18.14")
     compileOnly(project(":bridge"))
 
     // tiny-remapper + ASM, compile-only. ReplHost.kt links these to remap compiled-script bytecode

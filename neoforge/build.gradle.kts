@@ -67,13 +67,13 @@ dependencies {
     if (!unobf) {
         "additionalRuntimeClasspath"("org.jetbrains.kotlin:kotlin-stdlib:2.4.10")
         "additionalRuntimeClasspath"("org.jetbrains.kotlin:kotlin-reflect:2.4.10")
-        "additionalRuntimeClasspath"("net.bytebuddy:byte-buddy:1.18.12")
-        "additionalRuntimeClasspath"("net.bytebuddy:byte-buddy-agent:1.18.12")
+        "additionalRuntimeClasspath"("net.bytebuddy:byte-buddy:1.18.14")
+        "additionalRuntimeClasspath"("net.bytebuddy:byte-buddy-agent:1.18.14")
     } else {
         runtimeOnly("org.jetbrains.kotlin:kotlin-stdlib:2.4.10")
         runtimeOnly("org.jetbrains.kotlin:kotlin-reflect:2.4.10")
-        runtimeOnly("net.bytebuddy:byte-buddy:1.18.12")
-        runtimeOnly("net.bytebuddy:byte-buddy-agent:1.18.12")
+        runtimeOnly("net.bytebuddy:byte-buddy:1.18.14")
+        runtimeOnly("net.bytebuddy:byte-buddy-agent:1.18.14")
     }
 
     // Packaging: jar-in-jar for production. kotlin reflection resolves its impl through the stdlib's OWN loader,
@@ -84,6 +84,6 @@ dependencies {
         jarJar("org.jetbrains.kotlin:kotlin-stdlib") { version { strictly("2.4.10") } }
         jarJar("org.jetbrains.kotlin:kotlin-reflect") { version { strictly("2.4.10") } }
     }
-    jarJar("net.bytebuddy:byte-buddy") { version { strictly("1.18.12") } }
-    jarJar("net.bytebuddy:byte-buddy-agent") { version { strictly("1.18.12") } }
+    jarJar("net.bytebuddy:byte-buddy") { version { strictly("1.18.14") } }
+    jarJar("net.bytebuddy:byte-buddy-agent") { version { strictly("1.18.14") } }
 }
