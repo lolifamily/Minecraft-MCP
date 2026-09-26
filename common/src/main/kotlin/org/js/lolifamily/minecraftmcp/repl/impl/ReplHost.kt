@@ -4,6 +4,7 @@ import org.js.lolifamily.minecraftmcp.AtomicFiles
 import org.js.lolifamily.minecraftmcp.Constants
 import org.js.lolifamily.minecraftmcp.Props
 import org.js.lolifamily.minecraftmcp.exec.Capture
+import org.js.lolifamily.minecraftmcp.exec.GuardLane
 import org.js.lolifamily.minecraftmcp.exec.IterEval
 import org.js.lolifamily.minecraftmcp.exec.Outcome
 import org.js.lolifamily.minecraftmcp.platform.Services
@@ -132,7 +133,7 @@ object ReplHost {
         try {
             // Not an IterEval => compile or eval failed (both return an Outcome rather than throw), so nothing
             // past the compiler got warmed. Silence there would read as success.
-            val r = execute(compile(src, cp, "", 0), src, Capture())
+            val r = execute(compile(src, cp, null, 0), src, Capture())
             if (r is IterEval) {
                 r.iterator.hasNext()
             } else {
@@ -177,12 +178,12 @@ object ReplHost {
     private val evalSeq = AtomicLong()
 
     /** Compile [code]. Off-tick; [PlainEngine] serializes compilation. */
-    internal fun compile(code: String, cpFiles: List<File>, killIdField: String, evalId: Int): PlainEngine.Compiled {
+    internal fun compile(code: String, cpFiles: List<File>, guardLane: GuardLane?, evalId: Int): PlainEngine.Compiled {
         lastClasspath = cpFiles
         buildCompiler(cpFiles)
         val sourceName = "mcp_eval_${evalSeq.incrementAndGet()}"
         try {
-            return PlainEngine.compile(code, sourceName, killIdField, evalId)
+            return PlainEngine.compile(code, sourceName, guardLane, evalId)
         } catch (t: Throwable) {
             // Always rethrows — [spilling] hands back the original untouched unless it is carrying an IR dump,
             // so a control-flow throwable passes through as if this catch were not here.
@@ -210,7 +211,10 @@ object ReplHost {
                         cause,
                     )
                 }
-                return Outcome(true) { EvalRender.combine(out.take(), "script threw:\n" + EvalRender.stack(cause)) }
+                // Rendered here, on the step's own thread: a timeout's frames are found nowhere else. Only the
+                // copy of `out` is deferred, as Outcome prescribes.
+                val report = "script threw:\n" + EvalRender.stack(cause)
+                return Outcome(true) { EvalRender.combine(out.take(), report) }
             }
             if (value is Iterator<*> && isBuilderIterator(value)) {
                 val errored = AtomicBoolean(false)

@@ -1,6 +1,7 @@
 package org.js.lolifamily.minecraftmcp.repl.impl
 
 import org.js.lolifamily.minecraftmcp.exec.Capture
+import org.js.lolifamily.minecraftmcp.exec.GuardLane
 import org.js.lolifamily.minecraftmcp.repl.MaskingBridge
 import java.io.File
 
@@ -13,8 +14,8 @@ class MaskingBridgeImpl : MaskingBridge {
     override fun preload(): Boolean = ReplHost.preload()
     override fun warm() { ReplHost.warm() }
     override fun recordWorkingSet(path: String) { ReplHost.recordWorkingSet(path) }
-    override fun compile(code: String, cpFiles: List<File>, killIdField: String, evalId: Int): Any =
-        ReplHost.compile(code, cpFiles, killIdField, evalId)
+    override fun compile(code: String, cpFiles: List<File>, guardLane: GuardLane?, evalId: Int): Any =
+        ReplHost.compile(code, cpFiles, guardLane, evalId)
     override fun execute(handle: Any, code: String, out: Capture): Any = ReplHost.execute(handle as PlainEngine.Compiled, code, out)
     override fun buildCompiler(cpFiles: List<File>) { ReplHost.buildCompiler(cpFiles) }
 

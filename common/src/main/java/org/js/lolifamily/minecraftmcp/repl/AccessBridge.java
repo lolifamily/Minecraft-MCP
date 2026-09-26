@@ -226,6 +226,7 @@ public final class AccessBridge {
             }
         }
         // A companion's backing field is outside its own hierarchy: a static on the class it is the companion of.
+        @SuppressWarnings("DataFlowIssue") // IDEA reads the loop's `c != null` as a check on `cls`; no caller passes null
         Class<?> host = cls.getDeclaringClass();
         if (hasReceiver && host != null && isCompanion(cls, host)) {
             return MethodHandles.dropArguments(backingField(host, method, mt, false, caller, cause), 0, cls);

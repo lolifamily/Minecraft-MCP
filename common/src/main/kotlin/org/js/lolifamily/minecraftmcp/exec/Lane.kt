@@ -3,6 +3,7 @@ package org.js.lolifamily.minecraftmcp.exec
 import org.js.lolifamily.minecraftmcp.Constants
 import org.js.lolifamily.minecraftmcp.security.AuthGate
 import org.js.lolifamily.minecraftmcp.security.ClientAuthProbe
+import java.lang.ref.WeakReference
 import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
@@ -32,11 +33,15 @@ class Lane internal constructor(override val name: String, private val liveProbe
     private val stepped = ConcurrentLinkedQueue<EvalTask>()
 
     /** What the last heartbeat handed in — the `MinecraftServer` on the server lane, the `Minecraft` on
-     *  client/render; null before the first pump. Republished every pump because [isReady] and `run_command`
-     *  read it from the HTTP thread, and both must get a current value on an idle lane too. */
+     *  client/render; null before the first pump. Checked every pump because [isReady] and `run_command` read it
+     *  from the HTTP thread, and both must get a current value on an idle lane too.
+     *
+     *  Held weakly: a stopped integrated server would otherwise stay pinned, whole world included, until the next
+     *  one pumps. A running source is always strongly reachable — its own thread is running it. */
+    val tickSource: Any? get() = source.get()
+
     @Volatile
-    var tickSource: Any? = null
-        private set
+    private var source = WeakReference<Any>(null)
 
     /** Advanced only by [reapOnStop]; [offerOrReap] compares against it to kill a straggler still compiling
      *  when the heartbeat stopped for good. */
@@ -77,7 +82,7 @@ class Lane internal constructor(override val name: String, private val liveProbe
 
         // Same reason as the gate above for sitting ahead of the early-return: isReady and tickSource are read
         // from the HTTP thread, and an idle lane is exactly when the session's first submission arrives.
-        tickSource = self
+        if (source.get() !== self) source = WeakReference(self)   // a new reference only when the source changes
 
         if (active.isEmpty()) { // isEmpty, not size == 0: ConcurrentLinkedQueue.size() walks the chain
             TimeoutGuard.idle(guardLane())
@@ -150,7 +155,7 @@ class Lane internal constructor(override val name: String, private val liveProbe
 
     /** Which timeout kill-id lane this is: the server lane runs on the Server thread; the client and render
      *  lanes share the Render thread → RENDER. Known from the lane name at submit time, so it's baked into the
-     *  script's inlined GETSTATIC at compile/instrument time (no runtime thread sniffing). */
+     *  script's inlined guard at compile/instrument time (no thread sniffing on its hot path). */
     private fun guardLane(): GuardLane = if ("server" == name) GuardLane.SERVER else GuardLane.RENDER
 
     /** Kill and drop every active eval. Safe from any thread: drains concurrent queues; `kill` is idempotent.

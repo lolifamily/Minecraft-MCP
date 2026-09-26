@@ -1,6 +1,7 @@
 package org.js.lolifamily.minecraftmcp.repl;
 
 import org.js.lolifamily.minecraftmcp.exec.Capture;
+import org.js.lolifamily.minecraftmcp.exec.GuardLane;
 
 import java.io.File;
 import java.util.List;
@@ -40,14 +41,14 @@ public interface MaskingBridge {
      * Compile a snippet to an opaque handle. The handle is a masking-only type, so it is only ever passed
      * back to {@link #execute}.
      *
-     * @param code        the snippet source
-     * @param cpFiles     the compile classpath (game cp + mods + JiJ libs + mojmap symbols)
-     * @param killIdField name of the target lane's scriptguard kill-id field to instrument the snippet against,
-     *                    or {@code ""} for the off-tick lane (no watchdog, no guard instrumentation)
-     * @param evalId      the value that field must equal for THIS eval's woven check to fire
+     * @param code      the snippet source
+     * @param cpFiles   the compile classpath (game cp + mods + JiJ libs + mojmap symbols)
+     * @param guardLane the target lane's scriptguard to instrument the snippet against, or {@code null} for the
+     *                  off-tick lane (no watchdog, no guard instrumentation)
+     * @param evalId    the kill id that fires THIS eval's woven check
      * @return an opaque compiled-script handle for {@link #execute}
      */
-    Object compile(String code, List<File> cpFiles, String killIdField, int evalId);
+    Object compile(String code, List<File> cpFiles, GuardLane guardLane, int evalId);
 
     /**
      * Run a compiled handle.

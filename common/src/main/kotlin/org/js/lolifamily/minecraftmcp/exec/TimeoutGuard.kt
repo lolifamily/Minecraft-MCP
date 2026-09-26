@@ -3,6 +3,7 @@ package org.js.lolifamily.minecraftmcp.exec
 import org.js.lolifamily.minecraftmcp.Constants
 import org.js.lolifamily.minecraftmcp.Props
 import org.js.lolifamily.minecraftmcp.patch.Patches
+import java.lang.ref.WeakReference
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -19,12 +20,16 @@ enum class GuardLane(val killIdField: String) {
 }
 
 /**
- * Inlined per-tick time guard. `ScriptWeave.instrument` inlines `if (killId == myEvalId) throw timeout`
- * (GETSTATIC <killIdField> + LDC <evalId> + IF_ICMPNE + GETSTATIC timeout + ATHROW) at every method entry, loop
- * back-edge and (non-self-ref) catch handler entry of a script's own bytecode. Being inlined it pushes NO new
- * frame, so it runs even at the stack-full edge — inside the catch handler's existing frame — where an
+ * Inlined per-tick time guard. `ScriptWeave.instrument` inlines
+ * `if (killId == myEvalId && killThreads[lane] == Thread.currentThread()) throw timeout` at every method entry, loop
+ * back-edge and (non-self-ref) catch handler entry of a script's own bytecode. Being inlined, the id test pushes NO
+ * new frame, so it runs even at the stack-full edge — inside the catch handler's existing frame — where an
  * `INVOKESTATIC` guard would itself StackOverflowError. One mechanism handles BOTH dead loops (back-edges) and
  * dead recursion (the checks fire as SOE unwinds through catch handlers).
+ *
+ * <p>The thread test runs only mid-kill, and `currentThread()` is the guard's one call: intrinsic in compiled code
+ * and in JDK 19+ interpreters. JDK 17's interpreter goes through JNI and can SOE at the edge — which unwinds like
+ * the timeout, every catch handler above re-running this guard first, with more stack each time.
  *
  * <p>The budget bounds the INTERVAL BETWEEN HEARTBEATS, not the wall time one eval spends on the lane thread —
  * the two come apart where vanilla re-enters the pump ([endFrame]). A lane whose heartbeat keeps firing is a
@@ -33,16 +38,17 @@ enum class GuardLane(val killIdField: String) {
  *
  * <p>One kill-id field per `GuardLane` — a GETSTATIC-cheap field can't be thread-local, so instead of one shared
  * field that the server and render threads would trample, there is one per lane-thread. Which one a script reads
- * is decided at instrument time from the target lane, so compilation bakes in the right GETSTATIC with no runtime
- * thread sniffing. Those two fields are the only per-lane STATE here; everything else lives in a `GuardState`
- * indexed by the lane's `ordinal`, so this file has exactly one lane branch ([setKillId]).
+ * is decided at instrument time from the target lane, so compilation bakes in the right GETSTATIC and the hot path
+ * does no thread sniffing. Those two fields are the only NAMED per-lane state; everything else is indexed by the
+ * lane's `ordinal` — [killThreads] and a `GuardState` — so this file has exactly one lane branch ([setKillId]).
  *
  * <p>An ID rather than a flag, because instrumented code OUTLIVES its eval: a [Patches] handler and a
  * script-spawned thread both keep running after the eval that compiled them is gone, and a per-lane flag would
  * kill them whenever any LATER eval on that lane went over budget. The id is baked into the bytes at instrument
- * time, so it travels with the code and can only ever match the eval it came from. What remains is code
- * outliving an eval that WAS killed reading its own id — its own eval's business, and bounded by [exitStep].
- * Past that clear the id is never raised again, so such code runs unguarded for good — see [Patches].
+ * time, so it travels with the code and can only ever match the eval it came from. The thread test narrows a kill
+ * to the lane's own stack: that eval's code on any other thread — a handler, a thread it spawned — runs on, so a
+ * lane blocked on one (a `join()` on its own helper) stalls like any other blocking call. Past [exitStep]'s clear
+ * the id is never raised again, so escaped code runs unguarded for good — see [Patches].
  */
 object TimeoutGuard {
     private const val DEFAULT_BUDGET_MS = 1000L
@@ -70,6 +76,12 @@ object TimeoutGuard {
     @JvmField @Volatile
     var renderKillId = 0
 
+    /** The thread each lane's frame runs on, by [GuardLane] ordinal: [arm] sets it, [disarm] clears it, so a stopped
+     *  server's thread is never pinned. Plain elements: the guard reads one only past the volatile kill id, and the
+     *  write happens-before every raise of that id — [arm] schedules the watchdog after it. */
+    @JvmField
+    val killThreads = arrayOfNulls<Thread>(GuardLane.entries.size)
+
     @JvmField
     val timeout = ScriptTimeoutError(BUDGET_MS) // cached; inlined ATHROW (no NEW, no frame)
 
@@ -88,8 +100,15 @@ object TimeoutGuard {
      * reads instead — and it is the better answer anyway: the offending code, not wherever the inlined guard next
      * happened to fire. One immutable pair behind one volatile, so [caughtHere] reads thread and trace coherently.
      * A materialized trace holds only strings, so retaining it pins no snippet classloader.
+     *
+     * The thread is weak: from JDK 19 a dead Thread keeps its Runnable — for the integrated server, the whole server.
+     * [caughtOn] only ever matches a running caller, and a running caller keeps its own Thread reachable.
      */
-    private class Caught(val thread: Thread, val trace: Array<StackTraceElement>)
+    private class Caught(thread: Thread, val trace: Array<StackTraceElement>) {
+        private val thread = WeakReference(thread)
+
+        fun caughtOn(t: Thread): Boolean = thread.get() === t
+    }
 
     /** One lane-thread's watchdog state — everything except that lane's ABI kill-id field. */
     private class GuardState {
@@ -132,7 +151,7 @@ object TimeoutGuard {
      */
     fun caughtHere(): Array<StackTraceElement>? {
         val me = Thread.currentThread()
-        for (s in STATES) s.caught?.let { if (it.thread === me) return it.trace }
+        for (s in STATES) s.caught?.let { if (it.caughtOn(me)) return it.trace }
         return null
     }
 
@@ -208,6 +227,7 @@ object TimeoutGuard {
         s.timer?.cancel(false)
         s.caught = null
         setKillId(lane, 0)
+        killThreads[lane.ordinal] = laneThread   // before the schedule below — see killThreads
         s.timer = SCHEDULER.schedule({
             if (gen != s.gen) return@schedule   // retired while queued — nothing here is worth doing
             val subject = s.stepEval            // who the walk below is about to catch
@@ -232,5 +252,6 @@ object TimeoutGuard {
         s.timer?.cancel(false)
         s.timer = null
         setKillId(lane, 0)
+        killThreads[lane.ordinal] = null
     }
 }

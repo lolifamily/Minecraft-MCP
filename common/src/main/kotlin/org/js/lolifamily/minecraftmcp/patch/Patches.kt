@@ -16,8 +16,8 @@ import java.util.concurrent.ConcurrentHashMap
  * Only user patches live here — the mod's own hooks are Mixins, so [removeAll] is safe.
  *
  * A handler outlives its eval, and so does the scriptguard woven into it — but that guard answers only to that
- * eval's id, which is never raised again once the eval ends. Past that point nothing stops a handler that loops:
- * cheap and non-blocking is the contract, and it is unenforced.
+ * eval's id, only on its lane thread, and the id is never raised again once the eval ends. Past that point nothing
+ * stops a handler that loops: cheap and non-blocking is the contract, and it is unenforced.
  *
  * Install from the parallel lane: the retransform's safepoint stops the game either way, but on a tick lane it
  * also spends that tick's budget, so the eval reports a timeout over a patch that went in fine. A suggestion,

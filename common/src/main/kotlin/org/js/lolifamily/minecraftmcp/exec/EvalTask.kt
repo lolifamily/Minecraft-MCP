@@ -27,7 +27,7 @@ internal class EvalTask(
     /** The lane epoch this task was submitted against; if its heartbeat stopped for good while it was still
      *  compiling, it's reaped unrun. */
     val epoch: Long,
-    /** Which timeout kill-id field this lane's scripts read (baked in at compile), or `null` for no guard at
+    /** Which lane's guard this eval's bytecode is woven against (baked in at compile), or `null` for no guard at
      *  all — the off-tick [ParallelLane], which has no watchdog. */
     private val guardLane: GuardLane?,
 ) {
@@ -67,7 +67,7 @@ internal class EvalTask(
         val th = Thread({
             // This thread owns the future until onCompiled hands the task to a driver.
             try {
-                handle = ReplBridge.compile(code, guardLane?.killIdField.orEmpty(), id) // OFF-TICK: instrument+remap
+                handle = ReplBridge.compile(code, guardLane, id) // OFF-TICK: instrument+remap
                 onCompiled(this) // now eligible to be executed on the tick
             } catch (t: Throwable) {
                 // Full chain, not "$t": a compiler internal error names only itself at the top ("Exception while
@@ -179,10 +179,9 @@ internal class EvalTask(
     fun reportTimeout(stepNanos: Long) {
         if (future.isDone) return
         dead = true
-        // No more specific than this: Patches records no installing eval, an install can happen on any thread,
-        // and an escaped handler has no tool call of its own to report into.
-        val report = "script interrupted ${stepNanos / 1_000_000}ms into this step; handlers it installed " +
-            "(Patches, spawned threads) may also have been hit:\n" +
+        // No more specific than this: Patches records no installing eval.
+        val report = "script interrupted ${stepNanos / 1_000_000}ms into this step; handlers it installed that ran " +
+            "inside the step may also have been hit:\n" +
             EvalRender.stack(TimeoutGuard.timeout)
         future.complete(Outcome(true) { EvalRender.combine(out.take(), report) })
     }

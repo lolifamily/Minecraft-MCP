@@ -71,6 +71,7 @@ import org.jetbrains.kotlin.scripting.compiler.plugin.extensions.ScriptLoweringE
 import org.jetbrains.kotlin.scripting.compiler.plugin.impl.ScriptDiagnosticsMessageCollector
 import org.jetbrains.kotlin.scripting.compiler.plugin.impl.extractResultFields
 import org.js.lolifamily.minecraftmcp.Constants
+import org.js.lolifamily.minecraftmcp.exec.GuardLane
 import org.js.lolifamily.minecraftmcp.repl.scope.ScriptScope
 import java.io.File
 import java.util.concurrent.locks.ReentrantLock
@@ -226,7 +227,7 @@ internal object PlainEngine {
     /** Compile [code] to woven class bytes. Off-tick, and [warmUp] must already have run — warming here would
      *  silently drop its SPLIT api pinning, since the first call is the one that sticks. [name] becomes the
      *  generated class's name, so a fixed one would give every snippet the same class. */
-    fun compile(code: String, name: String, killIdField: String, evalId: Int): Compiled = compileLock.withLock {
+    fun compile(code: String, name: String, guardLane: GuardLane?, evalId: Int): Compiled = compileLock.withLock {
         val w = warm ?: error("plain engine not warmed")
         w.collector.clear()   // diagnostics from an earlier snippet must not leak into this one
         val renderInternalNames = w.configuration.renderDiagnosticInternalName
@@ -275,7 +276,7 @@ internal object PlainEngine {
         // The lowering tags the script class with its own name and its result field, so nothing here guesses.
         val result = extractResultFields(emitted.irModule).values.firstOrNull()
         val mainClass = result?.scriptClassName?.asString() ?: scriptClassName(emitted.irModule)
-        val woven = weaveClasses(raw, killIdField, evalId, w.classpath)
+        val woven = weaveClasses(raw, guardLane, evalId, w.classpath)
         val resultCone = result?.let { resultConeType(fir) }
         val resultType = result?.let { resultTypeName(resultCone, it.fieldTypeName) }
         return Compiled.Ok(woven, mainClass, result?.fieldName?.asString(), resultType, valueClassName(resultCone, session, mainClass))

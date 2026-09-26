@@ -4,6 +4,7 @@ import org.js.lolifamily.minecraftmcp.AtomicFiles;
 import org.js.lolifamily.minecraftmcp.Constants;
 import org.js.lolifamily.minecraftmcp.Props;
 import org.js.lolifamily.minecraftmcp.exec.Capture;
+import org.js.lolifamily.minecraftmcp.exec.GuardLane;
 import org.js.lolifamily.minecraftmcp.patch.Instrumentations;
 import org.js.lolifamily.minecraftmcp.platform.Services;
 
@@ -30,7 +31,7 @@ import java.util.jar.JarFile;
  * Game-loader side of the REPL. Builds the {@link MaskingClassLoader}, crosses into the masking world
  * with a single reflective bootstrap of {@code ...repl.impl.MaskingBridgeImpl} — reached type-safely
  * thereafter through the shared {@link MaskingBridge} interface — and caches the result so every
- * {@link #compile(String, String, int)} / {@link #execute(Object, String, Capture)} after the first is a warm call. The
+ * {@link #compile(String, GuardLane, int)} / {@link #execute(Object, String, Capture)} after the first is a warm call. The
  * same bridge also fronts the remap-cache builder ({@link #buildRemapArtifacts}), so ALL masking-only calls
  * share this one hop.
  *
@@ -93,24 +94,24 @@ public final class ReplBridge {
      * Compile {@code code} to an opaque handle, OFF any tick — pure computation, no game state. The
      * handle is a masking-loaded type the game loader only ever passes back to {@link #execute(Object, String, Capture)}.
      *
-     * @param code        the snippet source to compile
-     * @param killIdField name of the target lane's scriptguard kill-id field, woven into the snippet as a
-     *                    per-tick timeout check, or {@code ""} for the off-tick parallel lane (no watchdog)
-     * @param evalId      the value that field must equal for THIS eval's woven check to fire
+     * @param code      the snippet source to compile
+     * @param guardLane the target lane's scriptguard, woven into the snippet as a per-tick timeout check, or
+     *                  {@code null} for the off-tick parallel lane (no watchdog)
+     * @param evalId    the kill id that fires THIS eval's woven check
      * @return an opaque compiled-script handle for {@link #execute(Object, String, Capture)}
      * @throws Exception if masking-loader init or compilation fails
      */
-    public static Object compile(String code, String killIdField, int evalId) throws Exception {
+    public static Object compile(String code, GuardLane guardLane, int evalId) throws Exception {
         ensureInit();
-        return host.compile(code, classpath, killIdField, evalId);
+        return host.compile(code, classpath, guardLane, evalId);
     }
 
     /**
-     * Run a handle from {@link #compile(String, String, int)} and return an {@code exec.Outcome} (result text +
+     * Run a handle from {@link #compile(String, GuardLane, int)} and return an {@code exec.Outcome} (result text +
      * isError) or, if the snippet's value was a stdlib {@code iterator { ... yield() ... }}, an
      * {@code exec.IterEval} for the lane to drive one step per tick.
      *
-     * @param handle a handle from {@link #compile(String, String, int)}
+     * @param handle a handle from {@link #compile(String, GuardLane, int)}
      * @param code   the original source, so compile diagnostics can echo the offending line
      * @param out    the sink the snippet's {@code println} writes to; the caller owns it, so a kill, cancel or
      *               timeout can still report what was printed before the eval ended

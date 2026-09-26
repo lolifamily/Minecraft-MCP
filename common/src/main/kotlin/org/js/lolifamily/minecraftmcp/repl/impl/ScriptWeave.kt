@@ -2,6 +2,7 @@ package org.js.lolifamily.minecraftmcp.repl.impl
 
 import org.jetbrains.kotlin.scripting.compiler.plugin.impl.CompiledScriptClassLoader
 import org.js.lolifamily.minecraftmcp.Constants
+import org.js.lolifamily.minecraftmcp.exec.GuardLane
 import org.js.lolifamily.minecraftmcp.repl.AccessBridge
 import org.js.lolifamily.minecraftmcp.repl.NamespaceProbe
 import org.js.lolifamily.minecraftmcp.repl.RemapBundle
@@ -25,15 +26,15 @@ import java.io.File
  *  impl type moved in a future kotlin version — the link is resolved lazily at this call site, so
  *  NoClassDefFoundError is catchable here). */
 internal fun compiledScriptClassLoader(parent: ClassLoader?, files: Map<String, ByteArray>): ClassLoader {
-    try {
-        return CompiledScriptClassLoader(parent, files)
+    val loader: ClassLoader = try {
+        CompiledScriptClassLoader(parent, files)
     } catch (t: Throwable) {
         Constants.LOG.warn(
             "[mcp-guard] stock CompiledScriptClassLoader unavailable ({}); minimal loader — " +
                 "reflection over script-defined types may degrade",
             "$t",
         )
-        return object : ClassLoader(parent) {
+        object : ClassLoader(parent) {
             override fun findClass(name: String): Class<*> {
                 val b = files[name.replace('.', '/') + ".class"] ?: throw ClassNotFoundException(name)
                 return defineClass(name, b, 0, b.size)
@@ -42,6 +43,10 @@ internal fun compiledScriptClassLoader(parent: ClassLoader?, files: Map<String, 
                 files[name]?.let { java.io.ByteArrayInputStream(it) } ?: super.getResourceAsStream(name)
         }
     }
+    // The guard's kill path names java.lang.Thread. Resolve it for this loader now, on a shallow stack, not on the
+    // first kill — which may land at the stack-full edge. Once per loader covers every class it defines.
+    Class.forName("java.lang.Thread", false, loader)
+    return loader
 }
 
 // ============================================================================================
@@ -49,7 +54,8 @@ internal fun compiledScriptClassLoader(parent: ClassLoader?, files: Map<String, 
 //   1. Remap (non-mojmap only): mojmap refs → runtime namespace
 //   2. Access widening: field/method accesses on external classes → invokedynamic + privateLookupIn.
 //      Must follow remap — its indy owners are runtime names, resolved by Class.forName at bootstrap.
-//   3. Timeout guard: inline `if(killId == evalId) throw` at method entries, back-edges, catch handlers.
+//   3. Timeout guard: inline `if(killId == evalId && on the lane thread) throw` at method entries, back-edges,
+//      catch handlers.
 //      Must follow widening — an indy needs a frame, and the guard must stay frameless to fire at the
 //      stack-full edge, so the widening pass must never see the guard's GETSTATICs.
 // Runs on every path incl. dev mojmap — which is why compiledScriptClassLoader must be a faithful loader.
@@ -57,7 +63,12 @@ internal fun compiledScriptClassLoader(parent: ClassLoader?, files: Map<String, 
 
 /** Post-compile bytecode pipeline. [classpath] is the compile classpath the snippet was built against, used
  *  as the remap reference. */
-internal fun weaveClasses(input: Map<String, ByteArray>, killIdField: String, evalId: Int, classpath: List<File>): Map<String, ByteArray> {
+internal fun weaveClasses(
+    input: Map<String, ByteArray>,
+    guardLane: GuardLane?,
+    evalId: Int,
+    classpath: List<File>,
+): Map<String, ByteArray> {
     val toNs = when (NamespaceProbe.current()) {
         // SPIGOT shares the slot: its obf names are written into the bundle's "intermediary" column (assembleSpigot).
         NamespaceProbe.Namespace.INTERMEDIARY, NamespaceProbe.Namespace.SPIGOT -> "intermediary"
@@ -89,9 +100,9 @@ internal fun weaveClasses(input: Map<String, ByteArray>, killIdField: String, ev
         Constants.LOG.error("[mcp-remap] remap/widen failed; running as-is", t)
     }
     // Outside the try: an unguarded snippet must not reach a tick thread, so a failure here fails the eval.
-    // Blank killIdField => the off-tick ParallelLane: no watchdog, so no guard instrumentation. Remap and
+    // Null guardLane => the off-tick ParallelLane: no watchdog, so no guard instrumentation. Remap and
     // widening already ran above (a parallel eval importing net.minecraft.* needs both all the same).
-    if (killIdField.isNotEmpty()) files = instrument(files, killIdField, evalId)
+    if (guardLane != null) files = instrument(files, guardLane, evalId)
     return files
 }
 
@@ -99,10 +110,10 @@ internal fun weaveClasses(input: Map<String, ByteArray>, killIdField: String, ev
  *  iterator{} body lives in a synthetic $...invokeSuspend class, so instrumenting only the top-level class
  *  would miss the cross-tick loop). Metadata (.kotlin_module) rides along untouched. A failure on any one
  *  class fails the whole eval. */
-private fun instrument(cof: Map<String, ByteArray>, killIdField: String, evalId: Int): Map<String, ByteArray> {
+private fun instrument(cof: Map<String, ByteArray>, guardLane: GuardLane, evalId: Int): Map<String, ByteArray> {
     val out = LinkedHashMap<String, ByteArray>(cof.size)
     for ((path, bytes) in cof) {
-        out[path] = if (path.endsWith(".class")) instrumentClass(bytes, killIdField, evalId) else bytes
+        out[path] = if (path.endsWith(".class")) instrumentClass(bytes, guardLane, evalId) else bytes
     }
     return out
 }
@@ -115,27 +126,27 @@ private fun robustClassWriter(cr: ClassReader): ClassWriter = object : ClassWrit
         try { super.getCommonSuperClass(type1, type2) } catch (_: Throwable) { "java/lang/Object" }
 }
 
-/** ASM core pass inlining `if(killId == evalId) throw` at every method entry EXCEPT `<init>`/`<clinit>`, plus
- *  every loop back-edge and real catch entry. The inlined branch (skip label) needs a StackMapTable frame, so
+/** ASM core pass inlining the guard at every method entry EXCEPT `<init>`/`<clinit>`, plus every loop back-edge
+ *  and real catch entry. The inlined branches (skip label) need a StackMapTable frame, so
  *  COMPUTE_FRAMES (can't accept(cr,0)+COMPUTE_MAXS like a stack-neutral call would).
  *
  *  The snippet body compiles INTO `<init>`, so it gets no entry guard — but back-edges and catch handlers are
  *  driven by the visitor, not by that exclusion, so the runaway-loop and swallowed-timeout cases stay covered.
  *  An entry guard there would have to sit before the super call, where `this` is still uninitialized. */
-private fun instrumentClass(bytes: ByteArray, killIdField: String, evalId: Int): ByteArray {
+private fun instrumentClass(bytes: ByteArray, guardLane: GuardLane, evalId: Int): ByteArray {
     val cr = ClassReader(bytes)
     val cw = robustClassWriter(cr)
     @Suppress("ktlint:standard:wrapping")
     cr.accept(object : ClassVisitor(Opcodes.ASM9, cw) {
         override fun visitMethod(a: Int, n: String?, d: String?, s: String?, e: Array<String>?): MethodVisitor =
-            GuardMethodVisitor(super.visitMethod(a, n, d, s, e), n.orEmpty(), killIdField, evalId)
+            GuardMethodVisitor(super.visitMethod(a, n, d, s, e), n.orEmpty(), guardLane, evalId)
     }, ClassReader.SKIP_FRAMES)
     return cw.toByteArray()
 }
 
 /** Inlines the guard at method entry (except `<init>`/`<clinit>`), loop back-edges and real catch
  *  entries — rationale in the class body below. */
-private class GuardMethodVisitor(mv: MethodVisitor, mn: String, private val killIdField: String, private val evalId: Int) :
+private class GuardMethodVisitor(mv: MethodVisitor, mn: String, private val guardLane: GuardLane, private val evalId: Int) :
     MethodVisitor(Opcodes.ASM9, mv) {
     private val seen = HashSet<Label>()          // labels already visited: a later jump to one is a back-edge
     private val catchHandlers = HashSet<Label>() // entry labels of REAL catches (type != null) — see visitLabel
@@ -150,17 +161,23 @@ private class GuardMethodVisitor(mv: MethodVisitor, mn: String, private val kill
     // so guarding it would make the re-throw catch itself and spin forever.
     private var guardEntry = mn != "<init>" && mn != "<clinit>"
 
-    // Inline `if (TimeoutGuard.killId == evalId) throw TimeoutGuard.timeout` (GETSTATIC killId; LDC evalId;
-    // IF_ICMPNE skip; GETSTATIC timeout; ATHROW; skip:). Pushes NO new frame — runs inside the current frame
-    // even at the stack-full edge. Adds a branch → needs COMPUTE_FRAMES (see instrumentClass). GETSTATIC (not
-    // GETFIELD): the fields are @JvmField on a Kotlin `object`, which compiles to STATIC fields — a GETFIELD
-    // here would throw IncompatibleClassChangeError at link time.
+    // Inline `if (TimeoutGuard.killId == evalId && TimeoutGuard.killThreads[lane] == Thread.currentThread()) throw
+    // TimeoutGuard.timeout`. The id test pushes NO new frame — runs inside the current frame even at the stack-full
+    // edge; the thread test behind it runs only mid-kill (TimeoutGuard says why its call is safe there). Stack peaks
+    // at +2 on every path. Adds branches → needs COMPUTE_FRAMES (see instrumentClass). GETSTATIC (not GETFIELD): the
+    // fields are @JvmField on a Kotlin `object`, which compiles to STATIC fields — a GETFIELD here would throw
+    // IncompatibleClassChangeError at link time.
     private fun emitInline() {
         val g = "org/js/lolifamily/minecraftmcp/exec/TimeoutGuard"
         val skip = Label()
-        super.visitFieldInsn(Opcodes.GETSTATIC, g, killIdField, "I")   // serverKillId / renderKillId, per target lane
+        super.visitFieldInsn(Opcodes.GETSTATIC, g, guardLane.killIdField, "I")   // serverKillId / renderKillId, per target lane
         super.visitLdcInsn(evalId)
         super.visitJumpInsn(Opcodes.IF_ICMPNE, skip)
+        super.visitFieldInsn(Opcodes.GETSTATIC, g, "killThreads", "[Ljava/lang/Thread;")
+        super.visitLdcInsn(guardLane.ordinal)
+        super.visitInsn(Opcodes.AALOAD)
+        super.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/Thread", "currentThread", "()Ljava/lang/Thread;", false)
+        super.visitJumpInsn(Opcodes.IF_ACMPNE, skip)
         super.visitFieldInsn(Opcodes.GETSTATIC, g, "timeout", "Lorg/js/lolifamily/minecraftmcp/exec/ScriptTimeoutError;")
         super.visitInsn(Opcodes.ATHROW)
         super.visitLabel(skip)
