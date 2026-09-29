@@ -2,6 +2,7 @@ package org.js.lolifamily.minecraftmcp.repl.impl
 
 import org.jetbrains.kotlin.CoreEnvironmentDeprecation
 import org.jetbrains.kotlin.KtInMemoryTextSourceFile
+import org.jetbrains.kotlin.KtSourceFile
 import org.jetbrains.kotlin.backend.common.extensions.IrGenerationExtension
 import org.jetbrains.kotlin.backend.jvm.JvmIrCodegenFactory
 import org.jetbrains.kotlin.cli.common.fir.reportToMessageCollector
@@ -32,6 +33,7 @@ import org.jetbrains.kotlin.config.JvmTarget
 import org.jetbrains.kotlin.config.LanguageVersion
 import org.jetbrains.kotlin.config.LanguageVersionSettingsImpl
 import org.jetbrains.kotlin.config.languageVersionSettings
+import org.jetbrains.kotlin.diagnostics.DiagnosticReporter
 import org.jetbrains.kotlin.diagnostics.impl.BaseDiagnosticsCollector
 import org.jetbrains.kotlin.diagnostics.impl.DiagnosticsCollectorImpl
 import org.jetbrains.kotlin.fir.DependencyListForCliModule
@@ -48,15 +50,20 @@ import org.jetbrains.kotlin.fir.declarations.FirProperty
 import org.jetbrains.kotlin.fir.declarations.FirScript
 import org.jetbrains.kotlin.fir.declarations.utils.isInlineOrValue
 import org.jetbrains.kotlin.fir.extensions.FirExtensionRegistrar
+import org.jetbrains.kotlin.fir.languageVersionSettings
+import org.jetbrains.kotlin.fir.lightTree.LightTree2Fir
+import org.jetbrains.kotlin.fir.lightTree.toKotlinParsingErrorListener
 import org.jetbrains.kotlin.fir.pipeline.AllModulesFrontendOutput
 import org.jetbrains.kotlin.fir.pipeline.SingleModuleFrontendOutput
-import org.jetbrains.kotlin.fir.pipeline.buildFirViaLightTree
 import org.jetbrains.kotlin.fir.pipeline.runCheckers
 import org.jetbrains.kotlin.fir.pipeline.runResolution
+import org.jetbrains.kotlin.fir.resolve.providers.firProvider
+import org.jetbrains.kotlin.fir.resolve.providers.impl.FirProviderImpl
 import org.jetbrains.kotlin.fir.resolve.toRegularClassSymbol
 import org.jetbrains.kotlin.fir.session.FirJvmSessionFactory
 import org.jetbrains.kotlin.fir.session.KmpModuleKind
 import org.jetbrains.kotlin.fir.session.environment.AbstractProjectFileSearchScope
+import org.jetbrains.kotlin.fir.session.sourcesToPathsMapper
 import org.jetbrains.kotlin.fir.types.ConeKotlinType
 import org.jetbrains.kotlin.fir.types.coneTypeOrNull
 import org.jetbrains.kotlin.fir.types.renderReadableWithFqNames
@@ -67,6 +74,7 @@ import org.jetbrains.kotlin.ir.util.kotlinFqName
 import org.jetbrains.kotlin.modules.TargetId
 import org.jetbrains.kotlin.name.Name
 import org.jetbrains.kotlin.platform.jvm.JvmPlatforms
+import org.jetbrains.kotlin.readSourceFileWithMapping
 import org.jetbrains.kotlin.scripting.compiler.plugin.extensions.ScriptLoweringExtension
 import org.jetbrains.kotlin.scripting.compiler.plugin.impl.ScriptDiagnosticsMessageCollector
 import org.jetbrains.kotlin.scripting.compiler.plugin.impl.extractResultFields
@@ -96,6 +104,7 @@ internal object PlainEngine {
      *  [KotlinCoreEnvironment] is deliberately absent: nothing reads it, and the Disposer it registered with
      *  keeps it (and its project, which [projectEnvironment] wraps) alive for the life of the process. */
     private class Warm(
+        val parser: SnippetParser,
         val configuration: CompilerConfiguration,
         val projectEnvironment: VfsBasedProjectEnvironment,
         val sessionContext: FirJvmSessionFactory.Context,
@@ -157,6 +166,8 @@ internal object PlainEngine {
     @OptIn(CoreEnvironmentDeprecation::class, ExperimentalCompilerApi::class)
     fun warmUp(cpFiles: List<File>, parentApiVersion: String? = null) {
         warm?.let { return }
+        // First, ahead of seconds of classpath indexing: a compiler without the two parser members fails here.
+        val parser = SnippetParser()
         // Parsed once, here: the overlay writes its rebuilt kotlin_module at this level too, and the frontend
         // rejects a module file newer than what it was pinned to.
         val pinned = LanguageVersion.fromVersionString(parentApiVersion)
@@ -220,7 +231,7 @@ internal object PlainEngine {
             context = sessionContext,
         )
 
-        warm = Warm(configuration, projectEnvironment, sessionContext, libraryList, collector, widened)
+        warm = Warm(parser, configuration, projectEnvironment, sessionContext, libraryList, collector, widened)
         Constants.LOG.info("[mcp-plain] warm: {} classpath entries, all friends", widened.size)
     }
 
@@ -252,12 +263,12 @@ internal object PlainEngine {
         )
 
         val reporter = DiagnosticsCollectorImpl()
-        // The extension is what puts the parser into script mode; the stem is what the script class is named
+        // The extension is what McpScriptConfigurator.accepts matches; the stem is what the script class is named
         // after. The path must be non-null or `CompilerMessageLocationWithRange.create` drops the whole
         // location, and every diagnostic arrives without a line to point at.
         val fileName = "$name$SCRIPT_EXT"
         val source = KtInMemoryTextSourceFile(fileName, fileName, code)
-        val firFiles = session.buildFirViaLightTree(listOf(source), reporter, null)
+        val firFiles = listOf(buildSnippetFir(w.parser, session, source, reporter))
         val (scopeSession, fir) = session.runResolution(firFiles)
         session.runCheckers(scopeSession, fir, reporter, MppCheckerKind.Common)
         session.runCheckers(scopeSession, fir, reporter, MppCheckerKind.Platform)
@@ -279,7 +290,20 @@ internal object PlainEngine {
         val woven = weaveClasses(raw, guardLane, evalId, w.classpath)
         val resultCone = result?.let { resultConeType(fir) }
         val resultType = result?.let { resultTypeName(resultCone, it.fieldTypeName) }
-        return Compiled.Ok(woven, mainClass, result?.fieldName?.asString(), resultType, valueClassName(resultCone, session, mainClass))
+        return Compiled.Ok(woven, mainClass, result?.fieldName?.asString(), resultType, valueClassName(resultCone, session))
+    }
+
+    /** What `buildFirViaLightTree` does for one file, with [SnippetParser]'s tree in place of the script-mode one
+     *  it would have parsed. The read goes through the same line-mapping reader, so every offset in the tree —
+     *  the ones diagnostics point at and [yieldTypes] joins on — is the one the stock path would have produced. */
+    private fun buildSnippetFir(parser: SnippetParser, session: FirSession, source: KtSourceFile, reporter: DiagnosticReporter): FirFile {
+        val (code, lines) = source.getContentsAsStream().reader(Charsets.UTF_8).use { it.readSourceFileWithMapping() }
+        val tree = parser.parse(code, reporter.toKotlinParsingErrorListener(source, session.languageVersionSettings))
+        val provider = session.firProvider as FirProviderImpl
+        return LightTree2Fir(session, provider.kotlinScopeProvider, reporter).buildFirFile(tree, source, lines).also {
+            provider.recordFile(it)
+            session.sourcesToPathsMapper.registerFileSource(it.source!!, source.path ?: source.name)
+        }
     }
 
     private class Emitted(val irModule: IrModuleFragment, val state: GenerationState)
@@ -339,12 +363,12 @@ internal object PlainEngine {
         ?.returnTypeRef?.coneTypeOrNull
 
     /** JVM binary name of the result's type when it is a value class, else null — the one case where the
-     *  field alone cannot report the value it holds. A root package means the SNIPPET declared it, and the script
-     *  lowering nests those inside [scriptClass]: a ClassId carries the relative path, never the container. */
-    private fun valueClassName(cone: ConeKotlinType?, session: FirSession, scriptClass: String): String? {
+     *  field alone cannot report the value it holds. Never one the snippet declared — its body is a function body,
+     *  and a value class cannot be local — so the ClassId names it completely. */
+    private fun valueClassName(cone: ConeKotlinType?, session: FirSession): String? {
         val id = cone?.toRegularClassSymbol(session)?.takeIf { it.isInlineOrValue }?.classId ?: return null
         val nested = id.relativeClassName.asString().replace('.', '$')
-        return if (id.packageFqName.isRoot) "$scriptClass$$nested" else "${id.packageFqName.asString()}.$nested"
+        return if (id.packageFqName.isRoot) nested else "${id.packageFqName.asString()}.$nested"
     }
 
     /**
@@ -357,7 +381,8 @@ internal object PlainEngine {
     private fun resultTypeName(cone: ConeKotlinType?, fallback: String): String = cone?.renderReadableWithFqNames() ?: fallback
 
     /** Only reached when the snippet had no result value, so the lowering left no tag to read the name off.
-     *  A script's own declarations become members of its class, so the file holds exactly the one. */
+     *  The snippet declares nothing at the top level — its classes are local to its body — so the file holds
+     *  exactly the one. */
     @OptIn(UnsafeDuringIrConstructionAPI::class)
     private fun scriptClassName(module: IrModuleFragment): String =
         module.files.flatMap { it.declarations }.filterIsInstance<IrClass>().singleOrNull()?.kotlinFqName?.asString()

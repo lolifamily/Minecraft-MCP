@@ -10,29 +10,31 @@ import org.jetbrains.kotlin.fir.FirSession
 import org.jetbrains.kotlin.fir.backend.Fir2IrScriptConfiguratorExtension
 import org.jetbrains.kotlin.fir.builder.Context
 import org.jetbrains.kotlin.fir.builder.FirScriptConfiguratorExtension
-import org.jetbrains.kotlin.fir.copy
+import org.jetbrains.kotlin.fir.builder.asReceiverParameter
+import org.jetbrains.kotlin.fir.declarations.FirAnonymousInitializer
 import org.jetbrains.kotlin.fir.declarations.FirDeclarationOrigin
-import org.jetbrains.kotlin.fir.declarations.FirMemberDeclaration
-import org.jetbrains.kotlin.fir.declarations.FirNamedFunction
 import org.jetbrains.kotlin.fir.declarations.FirProperty
 import org.jetbrains.kotlin.fir.declarations.FirScript
 import org.jetbrains.kotlin.fir.declarations.builder.FirFileBuilder
 import org.jetbrains.kotlin.fir.declarations.builder.FirScriptBuilder
+import org.jetbrains.kotlin.fir.declarations.builder.buildAnonymousFunction
 import org.jetbrains.kotlin.fir.declarations.builder.buildImport
 import org.jetbrains.kotlin.fir.declarations.builder.buildProperty
 import org.jetbrains.kotlin.fir.declarations.builder.buildScriptReceiverParameter
-import org.jetbrains.kotlin.fir.declarations.destructuringDeclarationContainerVariable
 import org.jetbrains.kotlin.fir.declarations.impl.FirDeclarationStatusImpl
 import org.jetbrains.kotlin.fir.declarations.impl.FirDefaultPropertyGetter
-import org.jetbrains.kotlin.fir.declarations.isDestructuringDeclarationContainerVariable
-import org.jetbrains.kotlin.fir.expressions.FirLazyExpression
-import org.jetbrains.kotlin.fir.expressions.UnresolvedExpressionTypeAccess
+import org.jetbrains.kotlin.fir.expressions.FirBlock
+import org.jetbrains.kotlin.fir.expressions.FirExpression
+import org.jetbrains.kotlin.fir.expressions.FirFunctionCall
+import org.jetbrains.kotlin.fir.expressions.builder.buildAnonymousFunctionExpression
+import org.jetbrains.kotlin.fir.expressions.builder.buildFunctionCall
 import org.jetbrains.kotlin.fir.extensions.FirExtensionRegistrar
 import org.jetbrains.kotlin.fir.moduleData
+import org.jetbrains.kotlin.fir.references.builder.buildSimpleNamedReference
+import org.jetbrains.kotlin.fir.symbols.impl.FirAnonymousFunctionSymbol
 import org.jetbrains.kotlin.fir.symbols.impl.FirReceiverParameterSymbol
 import org.jetbrains.kotlin.fir.symbols.impl.FirRegularPropertySymbol
 import org.jetbrains.kotlin.fir.symbols.impl.FirScriptSymbol
-import org.jetbrains.kotlin.fir.toFirResolvedTypeRef
 import org.jetbrains.kotlin.fir.types.builder.buildUserTypeRef
 import org.jetbrains.kotlin.fir.types.impl.FirImplicitTypeRefImplWithoutSource
 import org.jetbrains.kotlin.fir.types.impl.FirQualifierPartImpl
@@ -42,13 +44,15 @@ import org.jetbrains.kotlin.ir.symbols.IrScriptSymbol
 import org.jetbrains.kotlin.name.CallableId
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
-import org.jetbrains.kotlin.scripting.compiler.plugin.services.findExpressionForResultProperty
+import org.jetbrains.kotlin.util.OperatorNameConventions
 
 /**
- * Configures an `execute_code` snippet as a [FirScript]. `KotlinLightParser` picks script mode purely
- * on the source file's extension not being `.kt`, so naming the in-memory source [SCRIPT_EXT] is the
- * whole switch — and it is what lets a snippet mix top-level statements with `object` / `class`
- * declarations, neither of which survives being wrapped in a function.
+ * Configures an `execute_code` snippet as a [FirScript] whose whole body is the body of one lambda, invoked on the
+ * spot: `({ body })()`, the inside of a `run { }`. [SnippetParser] parses the text under function-body rules and
+ * wraps all of it in a single script initializer, which the stock light-tree converter turns into one block of
+ * local declarations and statements; this moves that block into the lambda. There, data flow runs from each
+ * statement into the next and a `var` is a local — the two things a smart cast needs, and neither of which a
+ * script's class-body top level gives it.
  *
  * Imports are added at the FIR level, never by prepending text: a source rewrite would shift every
  * diagnostic's line number off what the user typed.
@@ -78,53 +82,82 @@ internal class McpScriptConfigurator(session: FirSession) : FirScriptConfigurato
             },
         )
 
-        // Top-level snippet declarations default to public, and a public declaration may not name an `internal`
-        // type. The compiler's REPL branch marks them Local for exactly this reason; light-tree has no REPL
-        // branch (KT-77583), so a snippet arrives as a FirScript instead. Internal is enough here — a snippet
-        // is its own module — and it stays public on the JVM, so nothing needs an accessor it did not need
-        // before. Status resolve keeps a visibility that was set explicitly. Ahead of the early return below:
-        // a snippet with no trailing expression has these declarations too.
-        for (declaration in declarations) {
-            if (declaration !is FirProperty && declaration !is FirNamedFunction) continue
-            if (declaration is FirProperty && declaration.isFromDestructuring()) continue
-            val member = declaration as FirMemberDeclaration
-            val visibility = member.status.visibility
-            if (visibility != Visibilities.Public && visibility != Visibilities.Unknown) continue
-            member.replaceStatus(member.status.copy(visibility = Visibilities.Internal))
-        }
-
-        // `resultPropertyName` only LABELS a property; building it is ours. The snippet's trailing expression
-        // arrives as the last anonymous initializer, so it is swapped for a property initialized by it —
-        // which is what gives the eval a value to report and a type to report it under.
-        val (lastBlock, lastExpression) = declarations.findExpressionForResultProperty() ?: return
-        declarations.removeLast()
-        @OptIn(UnresolvedExpressionTypeAccess::class)
-        val resultTypeRef = lastExpression.takeUnless { it is FirLazyExpression }?.coneTypeOrNull?.toFirResolvedTypeRef()
-            ?: FirImplicitTypeRefImplWithoutSource
-        declarations.add(
-            buildProperty {
-                name = RESULT_PROPERTY
-                symbol = FirRegularPropertySymbol(CallableId(context.packageFqName, name))
-                source = lastBlock.source
-                moduleData = session.moduleData
-                origin = FirDeclarationOrigin.ScriptCustomization.ResultProperty
-                initializer = lastExpression
-                returnTypeRef = resultTypeRef
-                getter = FirDefaultPropertyGetter(
-                    source = lastBlock.source?.fakeElement(KtFakeSourceElementKind.DefaultAccessor.Getter),
-                    moduleData = session.moduleData,
-                    origin = FirDeclarationOrigin.ScriptCustomization.ResultProperty,
-                    propertyTypeRef = resultTypeRef,
-                    visibility = Visibilities.Public,
-                    propertySymbol = symbol,
-                    modality = Modality.FINAL,
-                )
-                status = FirDeclarationStatusImpl(Visibilities.Public, Modality.FINAL)
-                isLocal = false
-                isVar = false
-            },
-        )
+        // Nothing else lives at the top level: every declaration is local to this one body, so there is no
+        // member visibility to adjust either.
+        val snippet = declarations.singleOrNull() as? FirAnonymousInitializer
+            ?: error("the snippet did not arrive as SnippetParser's single script initializer")
+        // Imports alone: nothing to run, and nothing to report.
+        val snippetBody = snippet.body?.takeIf { it.statements.isNotEmpty() } ?: return
+        val snippetSource = checkNotNull(snippet.source) { "the snippet's script initializer has no source" }
+        declarations.clear()
+        declarations.add(resultProperty(invokedOnTheSpot(snippetBody, snippetSource), snippetSource, context.packageFqName))
+        // `resultPropertyName` only LABELS a property; building it is ours.
         resultPropertyName = RESULT_PROPERTY
+    }
+
+    /**
+     * `({ body })()` — the body of a lambda, as in `run { }`, invoked on the spot. A lambda is a root for the data-flow
+     * analysis: what decides whether a `var` a closure writes may still smart-cast. A property initializer is no
+     * root, so it would let such a smart cast through; the anonymous initializer the body arrives in is one, but
+     * fir2ir flattens it into the script's top level, where every local variable becomes a property. The backend
+     * inlines a lambda invoked on the spot, so the body still runs straight in the constructor.
+     */
+    private fun invokedOnTheSpot(body: FirBlock, source: KtSourceElement): FirFunctionCall {
+        val lambdaSymbol = FirAnonymousFunctionSymbol()
+        return buildFunctionCall {
+            this.source = source
+            explicitReceiver = buildAnonymousFunctionExpression {
+                this.source = source
+                anonymousFunction = buildAnonymousFunction {
+                    this.source = source
+                    moduleData = session.moduleData
+                    origin = FirDeclarationOrigin.Source
+                    returnTypeRef = FirImplicitTypeRefImplWithoutSource
+                    receiverParameter = source.asReceiverParameter(session.moduleData, lambdaSymbol)
+                    symbol = lambdaSymbol
+                    isLambda = true
+                    hasExplicitParameterList = false
+                    this.body = body
+                }
+            }
+            // What the converter builds for `(expr)()` itself.
+            calleeReference = buildSimpleNamedReference {
+                this.source = source.fakeElement(KtFakeSourceElementKind.ImplicitInvokeCall)
+                name = OperatorNameConventions.INVOKE
+            }
+        }
+    }
+
+    /**
+     * The property holding the snippet's value: [value]'s, the body's last expression under the type it resolved
+     * to. A body ending on a statement makes that Unit, and fir2ir then emits the invocation as a plain statement
+     * and no property at all — so a snippet has a result exactly when it ends on a value, with nothing here
+     * deciding which.
+     *
+     * Private keeps the type the value has: from Kotlin 2.4 a public property approximates a local class — every
+     * class a snippet declares — to a supertype, `Any` for most. It is also the rule YieldType renders with, so a
+     * single-tick result and a yielded one report alike. The field is read back reflectively either way.
+     */
+    private fun resultProperty(value: FirExpression, source: KtSourceElement, packageFqName: FqName): FirProperty = buildProperty {
+        name = RESULT_PROPERTY
+        symbol = FirRegularPropertySymbol(CallableId(packageFqName, name))
+        this.source = source
+        moduleData = session.moduleData
+        origin = FirDeclarationOrigin.ScriptCustomization.ResultProperty
+        initializer = value
+        returnTypeRef = FirImplicitTypeRefImplWithoutSource
+        getter = FirDefaultPropertyGetter(
+            source = source.fakeElement(KtFakeSourceElementKind.DefaultAccessor.Getter),
+            moduleData = session.moduleData,
+            origin = FirDeclarationOrigin.ScriptCustomization.ResultProperty,
+            propertyTypeRef = FirImplicitTypeRefImplWithoutSource,
+            visibility = Visibilities.Private,
+            propertySymbol = symbol,
+            modality = Modality.FINAL,
+        )
+        status = FirDeclarationStatusImpl(Visibilities.Private, Modality.FINAL)
+        isLocal = false
+        isVar = false
     }
 
     override fun FirScriptBuilder.configureContainingFile(fileBuilder: FirFileBuilder) {
@@ -139,11 +172,6 @@ internal class McpScriptConfigurator(session: FirSession) : FirScriptConfigurato
     }
 }
 
-/** A destructuring is built as a container variable plus entries, accessors made to match, and it rejects
- *  visibility modifiers outright — so the whole shape is left as the builder made it. */
-private fun FirProperty.isFromDestructuring(): Boolean =
-    destructuringDeclarationContainerVariable != null || isDestructuringDeclarationContainerVariable == true
-
 /** Nothing to add on the IR side; the extension point must exist for scripts to convert at all. */
 internal class McpFir2IrScriptConfigurator(session: FirSession) : Fir2IrScriptConfiguratorExtension(session) {
     override fun IrScript.configure(script: FirScript, getIrScriptByFirSymbol: (FirScriptSymbol) -> IrScriptSymbol?) = Unit
@@ -156,13 +184,13 @@ internal class McpScriptRegistrar : FirExtensionRegistrar() {
     }
 }
 
-/** Any extension but `.kt` puts `KotlinLightParser` into script mode; this one is ours so
- *  [McpScriptConfigurator.accepts] can match. */
+/** What [McpScriptConfigurator.accepts] matches. It no longer picks the parser — [SnippetParser] parses every
+ *  snippet itself — but the converter still offers each SCRIPT node to whichever configurator accepts its file. */
 internal const val SCRIPT_EXT = ".mcpkts"
 
 private const val SCRIPT_SCOPE = "org.js.lolifamily.minecraftmcp.repl.scope.ScriptScope"
 
-/** Holds the snippet's last expression. Read back off the instantiated script object. */
+/** Holds the snippet's value, when its body ends on one. Read back off the instantiated script object. */
 internal val RESULT_PROPERTY: Name = Name.identifier("$\$mcpResult")
 
 /** So snippets say bare `Patches` / `Probe`. */

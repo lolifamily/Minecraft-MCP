@@ -141,9 +141,9 @@ internal object McpJson {
                 "classpath: write net.minecraft.* directly using Mojang-mapping names, and read/call private, protected, and Kotlin " +
                 "internal members directly — no reflection needed. WARNING: an opened private field outranks a same-named getter/setter.",
             // Patches/Probe are OBJECTS — a bare handle(id) does not compile, and an unqualified far call reads as if it would.
-            Param("code", required = true, description = "Kotlin source, run on the target lane's tick thread. To span ticks, " +
-                "make the last expression an iterator { ... yield(v) ... }, one step per tick, reporting each v. Only patches and " +
-                "probes persist across evals.\n\n" +
+            Param("code", required = true, description = "Kotlin source, run on the target lane's tick thread; declare before use. " +
+                "To span ticks, make the last expression an iterator { ... yield(v) ... }, one step per tick, reporting each v. " +
+                "Only patches and probes persist across evals.\n\n" +
                 "Patches.onEnter(cls, method, params?, tag?) { key, self, args -> ... } and Patches.onExit(...) { key, self, args, " +
                 "returned, thrown -> ... } weave a method, returning a live handle: .id .targets .pending .detached .fires .failures " +
                 ".lastError .weaveError. params picks one overload by case-sensitive JVM type name — listOf(\"Level\", \"int\", " +

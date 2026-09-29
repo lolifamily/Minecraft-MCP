@@ -8,8 +8,10 @@ import org.jetbrains.kotlin.fir.declarations.FirFile
 import org.jetbrains.kotlin.fir.expressions.FirFunctionCall
 import org.jetbrains.kotlin.fir.references.FirResolvedNamedReference
 import org.jetbrains.kotlin.fir.symbols.impl.FirNamedFunctionSymbol
+import org.jetbrains.kotlin.fir.types.ConeTypeParameterType
 import org.jetbrains.kotlin.fir.types.FirTypeProjectionWithVariance
 import org.jetbrains.kotlin.fir.types.coneTypeOrNull
+import org.jetbrains.kotlin.fir.types.contains
 import org.jetbrains.kotlin.fir.types.renderReadableWithFqNames
 import org.jetbrains.kotlin.fir.types.typeApproximator
 import org.jetbrains.kotlin.fir.visitors.FirVisitorVoid
@@ -41,8 +43,14 @@ private const val TYPE_NAME = "typeName"
 /** What the frontend itself applies when an inferred type has to become a declared one. */
 private val APPROXIMATION = TypeApproximatorConfiguration.PublicDeclaration.SaveAnonymousTypes
 
-/** Source span -> rendered type, for every [SCOPE] `yield` call in [fir]. Read after resolution: the type
- *  argument is inferred from the value, so before it there is nothing to render.
+/** Source span -> rendered type, for every [SCOPE] `yield` call in [fir] whose type is final at the call itself.
+ *  Read after resolution: the type argument is inferred from the value, so before it there is nothing to render.
+ *
+ *  A type that still names a type parameter is not final: `yield(r)` inside a snippet's own
+ *  `inline fun <reified R>` learns what `R` is only when the backend inlines that function, once per caller. A
+ *  string rendered here would be the literal `R` in every copy; left out, the call keeps `yield`'s default, which
+ *  the inliner does reify. Where the type IS final, a `typeName` the snippet passed itself is overwritten all the
+ *  same — the slot is ours, so the reported type cannot disagree with the value's.
  *
  *  Approximated as a declared type would be. Inference hands back forms no declaration can carry —
  *  `listOf(1, "a")` resolves to `List<Comparable<*> & Serializable>` — and a single-tick result already reports
@@ -54,7 +62,7 @@ internal fun yieldTypes(fir: List<FirFile>, session: FirSession): Map<Pair<Int, 
             if (element is FirFunctionCall && element.calleeReference.name.asString() == YIELD) {
                 val symbol = (element.calleeReference as? FirResolvedNamedReference)?.resolvedSymbol
                 val cone = (element.typeArguments.firstOrNull() as? FirTypeProjectionWithVariance)
-                    ?.typeRef?.coneTypeOrNull
+                    ?.typeRef?.coneTypeOrNull?.takeUnless { type -> type.contains { it is ConeTypeParameterType } }
                 val src = element.source
                 if (cone != null && src != null &&
                     (symbol as? FirNamedFunctionSymbol)?.callableId?.classId?.asFqNameString() == SCOPE

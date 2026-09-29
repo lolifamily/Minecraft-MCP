@@ -205,9 +205,9 @@ Evaluate Kotlin inside the running game. The **last expression is the return val
   and out of this eval's result. Library code that prints goes the same way.
 - **Each eval is isolated.** Every call is its own script, compiled to its own class on its own loader, so
   reusing names like `x` / `result` across calls never collides — and nothing carries over either.
-- **Top-level declarations are script declarations.** `class`, `fun`, `val` and local declarations all work
-  where you would expect. A named `object` does not: a script's top level cannot hold one, because it would
-  capture the script instance. Use a `class`, or an anonymous `object : … { }`.
+- **The snippet is a function body.** After its `import`s, the code runs as the body of a `run { }`: a check
+  smart-casts every statement after it, top-level `var`s included, and everything declared is local — declared
+  before use, under a local's rules. The compiler's own error names whichever rule a snippet breaks.
 - **Spanning ticks.** A step must return within the per-step budget (see `mcp.eval.step.budget.ms`), which is
   shared by every eval stepped in that tick. Overrunning it stalls that tick until the watchdog kills the step
   with `ScriptTimeoutError`. To run across ticks, make the last expression an `iterator { … yield(v) … }` — it
@@ -475,9 +475,9 @@ For anyone reading or extending the code — the Minecraft-specific machinery is
   nothing times a heartbeat.
 - **`ReplHost`** — drives the embeddable Kotlin compiler directly, **warmed once** (the
   `KotlinCoreEnvironment` + FIR library index — the ~6 s classpath scan — is built in the background at
-  startup and reused). Each eval compiles as its own *script*: the source is named with a non-`.kt`
-  extension, which is the whole of what puts the parser into script mode and lets a snippet mix top-level
-  statements with declarations. Only a per-eval source session is built on top of the warm state, so a steady
+  startup and reused). Each eval compiles as its own *script* whose body is a function body: `SnippetParser`
+  parses the text under function-body rules, and the body runs as a lambda invoked on the spot. Only a per-eval
+  source session is built on top of the warm state, so a steady
   eval costs a parse and a resolve, not a classpath scan. Compilation runs off the tick; the compiled snippet
   is stepped on the tick.
 - **The masking classloader** — the Kotlin scripting/compiler stack is loaded on a **self-managed loader,

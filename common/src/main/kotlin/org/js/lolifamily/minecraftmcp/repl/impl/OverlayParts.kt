@@ -38,9 +38,9 @@ internal class OverlayParts(private val pinned: LanguageVersion?) {
         // stdlib/kotlinx is never shaded, so nothing to repair; a partial list of ours would only shadow theirs.
         if (pkg == "kotlin" || pkg.startsWith("kotlin.") || pkg.startsWith("kotlinx.")) return
         when (kind) {
-            KIND_FILE_FACADE -> facades.computeIfAbsent(pkg) { ConcurrentHashMap.newKeySet() }.add(internalName)
+            KIND_FILE_FACADE -> facades.getOrPut(pkg) { ConcurrentHashMap.newKeySet() }.add(internalName)
             KIND_MULTIFILE_PART ->
-                multiParts.computeIfAbsent(pkg) { ConcurrentHashMap() }[internalName] = facade ?: return
+                multiParts.getOrPut(pkg) { ConcurrentHashMap() }[internalName] = facade ?: return
         }
     }
 

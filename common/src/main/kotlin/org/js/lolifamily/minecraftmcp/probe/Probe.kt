@@ -34,7 +34,10 @@ object Probe {
 
     /** Append [value] as a line to the named channel, creating it on first use. No-op while [mute]d. */
     fun emit(id: String, value: Any?) {
-        val ch = CHANNELS.computeIfAbsent(id) { Channel(it) }
+        // getOrPut, not computeIfAbsent: this runs on every emit, and computeIfAbsent locks the bin even on a hit
+        // unless the key is the bin's first node. A race to create builds a spare Channel that putIfAbsent drops;
+        // both callers get the one that stayed.
+        val ch = CHANNELS.getOrPut(id) { Channel(id) }
         if (!ch.muted) ch.buf.appendLine(value)
     }
 
