@@ -63,7 +63,6 @@ import org.jetbrains.kotlin.fir.resolve.toRegularClassSymbol
 import org.jetbrains.kotlin.fir.session.FirJvmSessionFactory
 import org.jetbrains.kotlin.fir.session.KmpModuleKind
 import org.jetbrains.kotlin.fir.session.environment.AbstractProjectFileSearchScope
-import org.jetbrains.kotlin.fir.session.sourcesToPathsMapper
 import org.jetbrains.kotlin.fir.types.ConeKotlinType
 import org.jetbrains.kotlin.fir.types.coneTypeOrNull
 import org.jetbrains.kotlin.fir.types.renderReadableWithFqNames
@@ -103,6 +102,7 @@ internal object PlainEngine {
     /** Everything reused across evals. Built once; the game classpath does not change under us. The
      *  [KotlinCoreEnvironment] is deliberately absent: nothing reads it, and the Disposer it registered with
      *  keeps it (and its project, which [projectEnvironment] wraps) alive for the life of the process. */
+    @Suppress("LongParameterList") // one call site, and no two parameters share a type — a swapped pair cannot compile
     private class Warm(
         val parser: SnippetParser,
         val configuration: CompilerConfiguration,
@@ -295,15 +295,14 @@ internal object PlainEngine {
 
     /** What `buildFirViaLightTree` does for one file, with [SnippetParser]'s tree in place of the script-mode one
      *  it would have parsed. The read goes through the same line-mapping reader, so every offset in the tree —
-     *  the ones diagnostics point at and [yieldTypes] joins on — is the one the stock path would have produced. */
+     *  the ones diagnostics point at and [yieldTypes] joins on — is the one the stock path would have produced.
+     *  Its source-to-path registration is left out: the one reader is the incremental-compilation lookup tracker,
+     *  and a session built without a LOOKUP_TRACKER never registers one. */
     private fun buildSnippetFir(parser: SnippetParser, session: FirSession, source: KtSourceFile, reporter: DiagnosticReporter): FirFile {
         val (code, lines) = source.getContentsAsStream().reader(Charsets.UTF_8).use { it.readSourceFileWithMapping() }
         val tree = parser.parse(code, reporter.toKotlinParsingErrorListener(source, session.languageVersionSettings))
         val provider = session.firProvider as FirProviderImpl
-        return LightTree2Fir(session, provider.kotlinScopeProvider, reporter).buildFirFile(tree, source, lines).also {
-            provider.recordFile(it)
-            session.sourcesToPathsMapper.registerFileSource(it.source!!, source.path ?: source.name)
-        }
+        return LightTree2Fir(session, provider.kotlinScopeProvider, reporter).buildFirFile(tree, source, lines).also(provider::recordFile)
     }
 
     private class Emitted(val irModule: IrModuleFragment, val state: GenerationState)

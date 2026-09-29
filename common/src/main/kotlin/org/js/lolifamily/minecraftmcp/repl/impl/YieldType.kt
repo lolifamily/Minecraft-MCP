@@ -46,11 +46,12 @@ private val APPROXIMATION = TypeApproximatorConfiguration.PublicDeclaration.Save
 /** Source span -> rendered type, for every [SCOPE] `yield` call in [fir] whose type is final at the call itself.
  *  Read after resolution: the type argument is inferred from the value, so before it there is nothing to render.
  *
- *  A type that still names a type parameter is not final: `yield(r)` inside a snippet's own
- *  `inline fun <reified R>` learns what `R` is only when the backend inlines that function, once per caller. A
- *  string rendered here would be the literal `R` in every copy; left out, the call keeps `yield`'s default, which
- *  the inliner does reify. Where the type IS final, a `typeName` the snippet passed itself is overwritten all the
- *  same — the slot is ours, so the reported type cannot disagree with the value's.
+ *  A type that still names a type parameter is not final: `yield(r)` inside an `inline fun <reified R>` learns
+ *  what `R` is only when the backend inlines that function, once per caller. The snippet's body cannot declare such
+ *  a function itself — a local function cannot be inline — but a class it declares can hold one as a member, so
+ *  this is live, not defensive. A string rendered here would be the literal `R` in every copy; left out, the call
+ *  keeps `yield`'s default, which the inliner does reify. Where the type IS final, a `typeName` the snippet passed
+ *  itself is overwritten all the same — the slot is ours, so the reported type cannot disagree with the value's.
  *
  *  Approximated as a declared type would be. Inference hands back forms no declaration can carry —
  *  `listOf(1, "a")` resolves to `List<Comparable<*> & Serializable>` — and a single-tick result already reports
