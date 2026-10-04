@@ -1,6 +1,6 @@
-<img src="branding/icon.svg" width="160" alt="Minecraft MCP">
+<img src="branding/icon.svg" width="160" alt="Kotlin REPL MCP">
 
-# Minecraft MCP
+# Kotlin REPL MCP
 
 > [!WARNING]
 > **This runs arbitrary code inside your game, and its bytecode injection reads as cheating.** Whoever holds

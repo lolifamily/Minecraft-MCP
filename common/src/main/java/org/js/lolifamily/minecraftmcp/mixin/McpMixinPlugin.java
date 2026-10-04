@@ -26,7 +26,7 @@ import java.util.regex.Pattern;
  */
 public final class McpMixinPlugin implements IMixinConfigPlugin {
 
-    private static final Logger LOG = LoggerFactory.getLogger("Minecraft MCP");
+    private static final Logger LOG = LoggerFactory.getLogger("Kotlin REPL MCP");
 
     /** {@code (Object, Object, Object)void} — the player-chat entry's shape on every version that has one. */
     private static final Pattern THREE_OBJ = Pattern.compile("^\\(L[^;]+;L[^;]+;L[^;]+;\\)V$");

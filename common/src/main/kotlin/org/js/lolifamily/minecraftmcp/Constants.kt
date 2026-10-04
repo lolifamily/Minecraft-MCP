@@ -8,7 +8,7 @@ object Constants {
     // const val: MOD_ID is an annotation argument (forge/neoforge `@Mod(Constants.MOD_ID)`), which needs a
     // compile-time constant.
     const val MOD_ID = "minecraft_mcp"
-    const val MOD_NAME = "Minecraft MCP"
+    const val MOD_NAME = "Kotlin REPL MCP"
 
     /** The mod's cache directory, relative to the game dir. The one place this name is written — every reader
      *  goes through `Services.PLATFORM.cacheDir`. */

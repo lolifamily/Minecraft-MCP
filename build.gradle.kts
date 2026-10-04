@@ -26,3 +26,23 @@ repositories {
 dependencies {
     subprojects.forEach { dokka(project(it.path)) }
 }
+
+// Dokka reads its header logo and its favicon from one bundled asset, images/logo-icon.svg, and a customAssets
+// file of that name replaces it — the name is the whole contract. branding/ keeps neutral names, so rename on the
+// way in, as multiloader-loader does for the mod-list logo. Sync, not Copy: the directory is handed over whole, so
+// a stale file in it would ship.
+val dokkaAssets = tasks.register<Sync>("dokkaAssets") {
+    from(layout.settingsDirectory.file("branding/icon.svg")) { rename("icon.svg", "logo-icon.svg") }
+    into(layout.buildDirectory.dir("dokkaAssets"))
+}
+
+// Here and nowhere else: a module renders with template substitution delayed and copies no assets, so the
+// aggregate's images/ comes from the root's configuration alone. The per-module javadocJar sites keep Dokka's logo.
+dokka {
+    // The header shows the root's moduleName, which defaults to project.name: the repo slug, an identifier. This
+    // site is the homepage (wrangler.jsonc serves it), so it carries the display name the mod lists show.
+    moduleName.set(providers.gradleProperty("mod_name"))
+    pluginsConfiguration.html {
+        customAssets.from(files(dokkaAssets).asFileTree)
+    }
+}
