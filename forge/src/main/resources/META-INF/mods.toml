@@ -10,6 +10,7 @@ credits = "${credits}"
 authors = "${mod_author}"
 description = '''${description}'''
 displayURL = "${homepage}"
+logoFile = "${mod_id}.png"
 # Mixins are side-scoped, so client-only, server-only and both-sides installs are all valid. Without this the
 # loader defaults to MATCH_VERSION and rejects a one-sided install.
 displayTest = "IGNORE_ALL_VERSION"

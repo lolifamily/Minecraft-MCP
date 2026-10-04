@@ -12,6 +12,7 @@
         "issues": "${issues}"
     },
     "license": "${license}",
+    "icon": "${mod_id}.png",
     "environment": "*",
     "entrypoints": {
         "main": [

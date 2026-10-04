@@ -10,6 +10,7 @@ credits="${credits}"
 authors = "${mod_author}"
 description = '''${description}'''
 displayURL = "${homepage}"
+logoFile = "${mod_id}.png"
 # Mixins are side-scoped, so a one-sided install is valid; MATCH_VERSION would reject it.
 displayTest = "IGNORE_ALL_VERSION"
 [[mixins]]

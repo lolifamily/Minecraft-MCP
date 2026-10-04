@@ -13,12 +13,18 @@ import java.util.function.BooleanSupplier;
 /**
  * Server-lane heartbeat + the server-stop reap, as a mixin.
  *
- * <p>{@code priority = Integer.MAX_VALUE}: the heartbeat pumps at the tick's {@code RETURN} (postfix) so the
- * eval sees the fully-settled post-tick server state, and max priority makes it fire as late as possible
- * relative to other mods' RETURN injectors and keeps our injection alive if another mod overwrites
- * {@code tickServer} (a lower-priority overwrite is applied before us).
+ * <p>The heartbeat pumps at the tick's {@code RETURN} (postfix) so the eval sees the fully-settled post-tick
+ * server state. RETURN callbacks run in the order their injectors are applied, and a high priority applies ours
+ * after other mods' of the same injector {@code order} — best-effort, since from Mixin 0.8.7 a higher
+ * {@code order} outranks any priority.
+ *
+ * <p>{@code 1_000_000_000}, not {@code Integer.MAX_VALUE}: upstream Mixin, which Forge ships, sorts by
+ * {@code this.priority - other.priority}, and MAX_VALUE overflows that against any negative priority, which can
+ * break the ordering of every mixin on the class. This value can't overflow against a priority down to
+ * -1_147_483_647. Priority plays no part against an {@code @Overwrite} of {@code tickServer}: all mixins merge
+ * their members before any injector scans for targets, so the injection survives an overwrite of any priority.
  */
-@Mixin(value = MinecraftServer.class, priority = Integer.MAX_VALUE)
+@Mixin(value = MinecraftServer.class, priority = 1_000_000_000)
 class MixinMinecraftServer {
 
     /**

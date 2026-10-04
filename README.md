@@ -1,3 +1,5 @@
+<img src="branding/icon.svg" width="160" alt="Minecraft MCP">
+
 # Minecraft MCP
 
 > [!WARNING]

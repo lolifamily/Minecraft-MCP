@@ -10,10 +10,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 /**
  * Client + render lane heartbeats, as a mixin. A client mixin, so it is never applied on a dedicated server.
  *
- * <p>{@code priority = Integer.MAX_VALUE}: pump at {@code RETURN} (postfix) as late as possible; see
- * {@link MixinMinecraftServer} for the full rationale (last-at-return + overwrite survival, best-effort).
+ * <p>{@code priority = 1_000_000_000}: pump at {@code RETURN} (postfix) after other mods' RETURN injectors,
+ * best-effort; see {@link MixinMinecraftServer} for the rationale and why not {@code Integer.MAX_VALUE}.
  */
-@Mixin(value = Minecraft.class, priority = Integer.MAX_VALUE)
+@Mixin(value = Minecraft.class, priority = 1_000_000_000)
 class MixinMinecraft {
 
     /**

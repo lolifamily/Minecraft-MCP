@@ -101,6 +101,8 @@ plugins.withId("org.jetbrains.kotlin.jvm") {
 tasks.named<ProcessResources>("processResources") {
     dependsOn(configurations["commonResources"])
     from(configurations["commonResources"])
+    // Mod-list logo, ${mod_id}.png in the metadata. At the jar root: Forge 1.18's getRootResource throws on any '/'.
+    from(layout.settingsDirectory.file("branding/icon.png")) { rename("icon.png", "$modId.png") }
 }
 
 // Inert while Dokka is applied (multiloader-common disables javadoc); fallback for a Dokka-free loader.

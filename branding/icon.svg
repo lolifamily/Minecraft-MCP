@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="512" height="512" viewBox="0 0 512 512" role="img">
+  <title>Minecraft MCP</title>
+  <!--
+    A grass block with a live terminal set into its side.
+
+    Orthographic, pitch φ = 30°, yaw ψ = 60°. Minecraft's inventory icons sit at 45°;
+    60° turns the terminal face toward the viewer. With a texel s = 25√2 units long:
+      across the terminal face   s·(sin ψ, sin φ·cos ψ)   ≈ (30.6186, 8.8388)
+      across the dirt face       s·(cos ψ, −sin φ·sin ψ)  ≈ (17.6777, −15.3093)
+      straight down              s·(0, cos φ)             ≈ (0, 30.6186)
+    Each face is an 8×8 texel grid put in place by one matrix, and everything on a
+    face, the prompt included, is drawn in that face's texels:
+      top    matrix(30.618625 8.838875 -17.677625 15.30925 204.23625 28.932875)
+      left   matrix(30.618625 8.838875 0 30.618625 62.814875 151.407375)    the terminal
+      right  matrix(17.677625 -15.30925 0 30.618625 307.76375 222.118125)   grass side
+    Faces are shaded 100 / 80 / 60 %, lit from the upper left. The block is centred
+    on (256, 248), 8 px above the canvas centre, so block and shadow sit centred
+    together.
+
+    The terminal sits on the left face on purpose: text there runs downhill, so the
+    `_` lands under the `>`. On the right face it runs uphill and reads as `>-`.
+  -->
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="42%" r="72%">
+      <stop offset="0" stop-color="#22324f"/>
+      <stop offset="0.55" stop-color="#131c2e"/>
+      <stop offset="1" stop-color="#090d16"/>
+    </radialGradient>
+    <radialGradient id="screen" cx="0.5" cy="0.55" r="0.65">
+      <stop offset="0" stop-color="#0e3440"/>
+      <stop offset="1" stop-color="#04121a"/>
+    </radialGradient>
+    <filter id="soft" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="17.5"/>
+    </filter>
+    <!-- used inside the left face, so these deviations are in texels and the bloom
+         shears with the face: it lies on the glass instead of hovering over it -->
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%" color-interpolation-filters="sRGB">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="0.18" result="near"/>
+      <feGaussianBlur in="SourceGraphic" stdDeviation="0.48" result="far"/>
+      <feMerge><feMergeNode in="far"/><feMergeNode in="near"/></feMerge>
+    </filter>
+    <!-- The glass, in left-face texels: filled on the face, and the bloom's clip. -->
+    <rect id="glass" x="0.5" y="1.5" width="7" height="6"/>
+    <clipPath id="on-glass"><use xlink:href="#glass"/></clipPath>
+    <!-- The prompt as two monospace cells, laid out in left-face texels before
+         projection. Margins 0.5 left and right, 0.7 above and below, leave a text
+         area of u 1–7, v 2.2–6.8, split at u 4 into two 3-texel cells. `>` fills its
+         cell, ends cut parallel to the glass edge; `_` sits on the baseline with a
+         0.5 gap after the split. Both strokes are 0.8 thick. -->
+    <g id="prompt">
+      <polygon points="1,2.2 4,4.5 1,6.8 1,5.792 2.685,4.5 1,3.208"/>
+      <rect x="4.5" y="6" width="2.5" height="0.8"/>
+    </g>
+  </defs>
+
+  <rect width="512" height="512" fill="url(#bg)"/>
+
+  <!-- contact shadow -->
+  <polygon points="198,269.75 472.375,349 314,486.125 39.625,407" fill="#000" opacity="0.55" filter="url(#soft)"/>
+
+  <!-- silhouette underlay: what anti-aliased face seams blend into, instead of the background -->
+  <polygon points="204.23625,28.932875 449.185125,99.643625 449.185125,344.592625 307.76375,467.067125 62.814875,396.356375 62.814875,151.407375" fill="#3a3a36"/>
+
+  <!-- top: grass, 100 % -->
+  <g transform="matrix(30.618625 8.838875 -17.677625 15.30925 204.23625 28.932875)">
+    <rect width="8" height="8" fill="#5a9e36"/>
+    <path fill="#6db540" d="M1 0h1v1h-1zM5 0h1v1h-1zM0 1h1v1h-1zM4 1h1v1h-1zM7 1h1v1h-1zM2 2h1v1h-1zM5 2h1v1h-1zM4 3h1v1h-1zM6 3h1v1h-1zM0 4h1v1h-1zM7 4h1v1h-1zM1 5h1v1h-1zM3 5h1v1h-1zM2 6h1v1h-1zM5 6h1v1h-1zM4 7h1v1h-1z"/>
+    <path fill="#4b8a2d" d="M3 0h1v1h-1zM5 1h1v1h-1zM0 2h1v1h-1zM7 2h1v1h-1zM2 4h1v1h-1zM4 5h1v1h-1zM1 7h1v1h-1zM6 7h1v1h-1z"/>
+    <path fill="#82c94d" d="M6 0h1v1h-1zM2 1h1v1h-1zM1 3h1v1h-1zM5 4h1v1h-1zM0 6h1v1h-1zM7 6h1v1h-1zM3 7h1v1h-1z"/>
+    <path fill="#3f7a26" d="M3 3h1v1h-1zM6 5h1v1h-1z"/>
+  </g>
+
+  <!-- right: grass side, 60 % -->
+  <g transform="matrix(17.677625 -15.30925 0 30.618625 307.76375 222.118125)">
+    <rect width="8" height="8" fill="#503a28"/>
+    <path fill="#365f20" d="M0 0h1v1h-1zM1 0h1v1h-1zM3 0h1v1h-1zM5 0h1v1h-1zM7 0h1v1h-1zM1 1h1v1h-1zM4 1h1v1h-1zM6 1h1v1h-1zM1 2h1v1h-1z"/>
+    <path fill="#416d26" d="M2 0h1v1h-1zM6 0h1v1h-1zM3 1h1v1h-1zM7 1h1v1h-1z"/>
+    <path fill="#2d531b" d="M4 0h1v1h-1zM0 1h1v1h-1zM6 2h1v1h-1z"/>
+    <path fill="#412d1f" d="M4 2h1v1h-1zM7 3h1v1h-1zM2 4h1v1h-1zM5 5h1v1h-1zM0 6h1v1h-1zM3 6h1v1h-1zM6 7h1v1h-1z"/>
+    <path fill="#5d4732" d="M0 3h1v1h-1zM5 3h1v1h-1zM3 4h1v1h-1zM7 5h1v1h-1zM4 6h1v1h-1zM1 7h1v1h-1z"/>
+    <path fill="#352519" d="M3 3h1v1h-1zM6 4h1v1h-1zM1 5h1v1h-1zM7 7h1v1h-1z"/>
+  </g>
+
+  <!-- left: the terminal, 80 %. A grass lip on top, its drips stopping on the bezel. -->
+  <g transform="matrix(30.618625 8.838875 0 30.618625 62.814875 151.407375)">
+    <rect width="8" height="8" fill="#3d4552"/>
+    <use xlink:href="#glass" fill="url(#screen)"/>
+    <path fill="#487e2b" d="M0 0h1v1h-1zM2 0h1v1h-1zM4 0h1v1h-1zM6 0h1v1h-1zM7 0h1v1h-1zM1 1h1v0.5h-1zM4 1h1v0.5h-1z"/>
+    <path fill="#579133" d="M1 0h1v1h-1zM5 0h1v1h-1z"/>
+    <path fill="#3c6e24" d="M3 0h1v1h-1zM6 1h1v0.5h-1z"/>
+    <use xlink:href="#prompt" fill="#22d3ee" filter="url(#glow)" clip-path="url(#on-glass)"/>
+    <use xlink:href="#prompt" fill="#b9f8ff"/>
+  </g>
+</svg>

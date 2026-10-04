@@ -27,23 +27,24 @@ class MinecraftMcp :
             server.pluginManager.disablePlugin(this)
             return
         }
-        // Before registerEvents: too early is unreadable (nothing pumps yet), too late is not.
+        // Before the heartbeat registers in serverLoaded(): too early is unreadable (nothing pumps yet), too late
+        // is not.
         running = true
-        // Unconditional: the heartbeat is needed either way, and a later ServerLoadEvent counting down an
-        // already-open latch is a no-op.
+        // Registers onServerLoad; a hot-load never sees that event, so the branch below stands in for it.
         server.pluginManager.registerEvents(this, this)
         if (loadedIntoRunningServer()) {
             Constants.LOG.warn("[mcp] hot-loaded (unsupported) — plugin gate opened now; later plugin urls are not importable")
-            ReplBridge.pluginsLatch.countDown()
+            serverLoaded()
         }
     }
 
     /** Hot-loaded into a running server (PlugMan et al) rather than booted with it — an UNSUPPORTED path,
      *  covered only because it is the one that breaks outright: [onServerLoad] is this host's sole opener of
-     *  [ReplBridge.pluginsLatch] and never fires there, hanging every eval rather than degrading one.
-     *  Heuristic and best-effort, sound only while plugin.yml says `load: STARTUP` — that is what puts
-     *  `onEnable` ahead of world loading. Wrong low is the old behavior; wrong high costs a script importing
-     *  a plugin that attached its urls after this. */
+     *  [ReplBridge.pluginsLatch] and starter of the heartbeat, and never fires there, hanging every eval rather
+     *  than degrading one. Heuristic and best-effort, sound only while plugin.yml says `load: STARTUP` — that is
+     *  what puts `onEnable` ahead of world loading. Wrong low is the old hang, now without a heartbeat as well;
+     *  wrong high costs a script importing a plugin that attached its urls after this, and doubles the heartbeat
+     *  once ServerLoadEvent fires too. */
     private fun loadedIntoRunningServer(): Boolean = Bukkit.getWorlds().isNotEmpty()
 
     override fun onDisable() {
@@ -64,23 +65,6 @@ class MinecraftMcp :
     }
 
     /**
-     * Server-lane heartbeat, standing in for the mod path's `tickServer` RETURN injection.
-     *
-     * `ServerTickEndEvent` fires after `runAllTasks()` and before the loop's `waitUntilNextTick()`, so an eval
-     * sees the settled tick within the same tick. A `runTaskTimer(0, 1)` pump would observe the same state but
-     * only after that sleep — `50ms - MSPT` later, i.e. worst on an idle server.
-     *
-     * MONITOR runs this after every other plugin listener. It cannot order us against mods, which inject at the
-     * method's RETURN and therefore still run after this event.
-     */
-    // Paper resolves the event to register FROM this parameter's type, and a signature it can't read is skipped
-    // with a log line rather than an error — dropping the parameter would silently kill the heartbeat.
-    @EventHandler(priority = EventPriority.MONITOR)
-    fun onServerTickEnd(@Suppress("UnusedParameter") event: ServerTickEndEvent) {
-        Lanes.SERVER.pump(Bukkit.getServer())
-    }
-
-    /**
      * Plugin gate, standing in for the mod path's `MixinDedicatedServer#initServer` RETURN — fired right after
      * `enablePlugins(POSTWORLD)`, so every plugin's `onEnable` has returned and the urls it attached to its own
      * loader are on it (see [ReplBridge.pluginsLatch]). MONITOR is the last priority BUCKET, not last outright:
@@ -88,7 +72,37 @@ class MinecraftMcp :
      */
     @EventHandler(priority = EventPriority.MONITOR)
     fun onServerLoad(@Suppress("UnusedParameter") event: ServerLoadEvent) {
+        serverLoaded()
+    }
+
+    /** The server has finished loading: [onServerLoad], or the hot-load branch in [onEnable] — exclusive under
+     *  `load: STARTUP`, so this runs once. Opens the plugin gate and starts the heartbeat. */
+    private fun serverLoaded() {
+        // Here, not in onEnable: a STARTUP registration would sit in front of every POSTWORLD plugin's MONITOR tick
+        // listener. The tick loop starts only after initServer() returns, past ServerLoadEvent, so no tick is lost.
+        server.pluginManager.registerEvents(Heartbeat, this)
         ReplBridge.pluginsLatch.countDown()
+    }
+
+    /**
+     * Server-lane heartbeat, standing in for the mod path's `tickServer` RETURN injection. Its own listener, so
+     * onEnable's `registerEvents(this, this)` doesn't register it early.
+     *
+     * `ServerTickEndEvent` fires after `runAllTasks()` and before the loop's `waitUntilNextTick()`, so an eval
+     * sees the settled tick within the same tick. A `runTaskTimer(0, 1)` pump would observe the same state but
+     * only after that sleep — `50ms - MSPT` later, i.e. worst on an idle server.
+     *
+     * MONITOR, registered once the server has loaded, runs this after every tick listener registered by then; one
+     * registered later still lands behind it. It cannot order us against mods, which inject at the method's
+     * RETURN and therefore still run after this event.
+     */
+    private object Heartbeat : Listener {
+        // Paper resolves the event to register FROM this parameter's type, and a signature it can't read is skipped
+        // with a log line rather than an error — dropping the parameter would silently kill the heartbeat.
+        @EventHandler(priority = EventPriority.MONITOR)
+        fun onServerTickEnd(@Suppress("UnusedParameter") event: ServerTickEndEvent) {
+            Lanes.SERVER.pump(Bukkit.getServer())
+        }
     }
 
     companion object {
