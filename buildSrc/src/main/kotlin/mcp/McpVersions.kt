@@ -23,6 +23,7 @@ import org.gradle.api.provider.Provider
  */
 class McpVersions(project: Project) {
     private val providers = project.providers
+
     // settingsDirectory, not rootProject.layout — same dir, reached without touching another Project.
     private val root = project.layout.settingsDirectory
     private val catalog: VersionCatalog by lazy {
@@ -49,10 +50,9 @@ class McpVersions(project: Project) {
         }
 
     /** A coordinate that must exist on the active node; fails naming the file otherwise. */
-    fun required(key: String): Provider<String> =
-        activeVersion.zip(extras) { v, m ->
-            m[key] ?: throw GradleException("versions/$v/gradle.properties is missing required key '$key'")
-        }
+    fun required(key: String): Provider<String> = activeVersion.zip(extras) { v, m ->
+        m[key] ?: throw GradleException("versions/$v/gradle.properties is missing required key '$key'")
+    }
 
     /** A coordinate that MAY be absent (e.g. `neoforge_loader_version_range` on 1.18); absent Provider if missing. */
     fun optional(key: String): Provider<String> = extras.map { it[key] }
@@ -63,19 +63,17 @@ class McpVersions(project: Project) {
     // ---- version numbers (from the `mc` catalog) ----
 
     /** Required catalog version; throws if the active node's libs.versions.toml lacks [alias]. */
-    fun version(alias: String): Provider<String> =
-        providers.provider {
-            catalog.findVersion(alias)
-                .orElseThrow { GradleException("version catalog 'mc' is missing version '$alias'") }
-                .requiredVersion
-        }
+    fun version(alias: String): Provider<String> = providers.provider {
+        catalog.findVersion(alias)
+            .orElseThrow { GradleException("version catalog 'mc' is missing version '$alias'") }
+            .requiredVersion
+    }
 
     /** Optional catalog version with a fallback (absent [alias] -> [default]). */
-    fun versionOr(alias: String, default: String): Provider<String> =
-        providers.provider {
-            val found = catalog.findVersion(alias)
-            if (found.isPresent) found.get().requiredVersion else default
-        }
+    fun versionOr(alias: String, default: String): Provider<String> = providers.provider {
+        val found = catalog.findVersion(alias)
+        if (found.isPresent) found.get().requiredVersion else default
+    }
 
     /** Presence check for gating whole blocks (parchment / neoforge). Eager: the catalog is a settings-time constant. */
     fun hasVersion(alias: String): Boolean = catalog.findVersion(alias).isPresent

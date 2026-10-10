@@ -1,6 +1,6 @@
 import xyz.wagyourtail.unimined.api.UniminedExtension
 
-// Versions inline, as forge does for its three FG plugins. Unlike common, this needs no buildscript{}: that block
+// Versions inline, as forge does for its FG plugins. Unlike common, this needs no buildscript{}: that block
 // exists there only to force ASM on the classpath Unimined rides in on, for MERGING the Java-25 Minecraft jar with
 // Unimined's bundled 9.7.1. :common's Minecraft is always materialized before :paper compiles — its jar is a
 // compileOnly dependency here — so by the time we look the merged artifact is a cache hit.

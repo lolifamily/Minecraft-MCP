@@ -28,9 +28,14 @@ internal sealed class Shard(val name: String, val members: List<CpEntry>) {
 /** Where each shard's jar is, and which of them have to be written. */
 internal class ShardPlan(val out: Map<Shard, File>, val stale: List<Shard>)
 
-/** One mods.stamp line. Named rather than a Triple: three same-typed strings in positional form is an
- *  argument order nobody can get wrong at a glance, and getting it wrong here reads back as a valid file. */
-internal class StampRow(val contentKey: String, val shard: String, val source: String)
+/** One mods.stamp line. Named rather than a tuple: same-typed fields in positional form are an argument order
+ *  nobody can get wrong at a glance, and getting it wrong here reads back as a valid file.
+ *
+ *  [length] and [mtime] are the shard's own as stamped. Every rewrite is a new file, so a row the stamp never
+ *  caught up with — a kill before [publishStamps], or its write failing — stops vouching for bytes it never saw. */
+internal class StampRow(val contentKey: String, val shard: String, val length: Long, val mtime: Long, val source: String) {
+    fun vouchesFor(f: File): Boolean = f.isFile && f.length() == length && f.lastModified() == mtime
+}
 
 /**
  * Cut [entries] into the environment shard plus one shard per user-space jar.
@@ -78,7 +83,7 @@ internal fun resolveShards(dir: File, shards: List<Shard>, wantEnv: List<String>
         } else {
             when (s) {
                 is Shard.Env -> File(dir, ENV_SHARD).takeIf { it.isFile }
-                is Shard.User -> s.src.contentKey?.let { known[it] }?.let { File(dir, it) }?.takeIf { it.isFile }
+                is Shard.User -> s.src.contentKey?.let { known[it] }?.let { r -> File(dir, r.shard).takeIf { r.vouchesFor(it) } }
             }
         }
         out[s] = hit ?: File(dir, s.name)
@@ -99,7 +104,7 @@ internal fun publishStamps(dir: File, shards: List<Shard>, out: Map<Shard, File>
         val key = s.src.contentKey ?: return@mapNotNull null
         val jar = out.getValue(s)
         if (s.src.file in failed || !jar.isFile) return@mapNotNull null
-        StampRow(key, jar.name, s.src.file.name)
+        StampRow(key, jar.name, jar.length(), jar.lastModified(), s.src.file.name)
     }
     writeModsStamp(File(dir, MODS_STAMP), rows)
     val env = shards.filterIsInstance<Shard.Env>().firstOrNull()
@@ -148,28 +153,32 @@ internal fun writeEnvRows(f: File, rows: List<String>) {
 }
 
 /**
- * `contentKey -> shard file name` for the user shards.
+ * `contentKey -> row` for the user shards.
  *
  * Keyed on contentKey, NOT on the shard name: a jar re-extracted under a fresh temp name every boot (Paper
- * does this for a plugin's bundled jars) is unrecognizable by name and unchanged by content. Third column is
- * the source jar, written for whoever has to read this file, never parsed.
+ * does this for a plugin's bundled jars) is unrecognizable by name and unchanged by content. The last column is
+ * the source jar, written for whoever has to read this file, never parsed — last because a file name is the one
+ * column free to hold a `|`. A row without the shard's length and mtime reads as no row, so one written before
+ * they were rebuilds its shard once.
  */
-internal fun readModsStamp(f: File): Map<String, String> = if (!f.isFile) {
+internal fun readModsStamp(f: File): Map<String, StampRow> = if (!f.isFile) {
     emptyMap()
 } else {
     runCatching {
         f.readLines().mapNotNull { line ->
-            val p = line.split('|')
-            if (p.size < 2 || p[0].isEmpty()) null else p[0] to p[1]
+            val p = line.split('|', limit = 5)
+            val length = p.getOrNull(2)?.toLongOrNull() ?: return@mapNotNull null
+            val mtime = p.getOrNull(3)?.toLongOrNull() ?: return@mapNotNull null
+            if (p[0].isEmpty()) null else p[0] to StampRow(p[0], p[1], length, mtime, p.getOrElse(4) { "" })
         }.toMap()
     }.getOrDefault(emptyMap())
 }
 
-/** Write [rows] as `contentKey|shard|source`, published by atomic rename like every other cache file. */
+/** Write [rows] as `contentKey|shard|length|mtime|source`, published by atomic rename like every other cache file. */
 internal fun writeModsStamp(f: File, rows: List<StampRow>) {
     runCatching {
         AtomicFiles.publishing(f.toPath()) { tmp ->
-            tmp.toFile().writeText(rows.joinToString("\n") { "${it.contentKey}|${it.shard}|${it.source}" })
+            tmp.toFile().writeText(rows.joinToString("\n") { "${it.contentKey}|${it.shard}|${it.length}|${it.mtime}|${it.source}" })
         }
     }
 }

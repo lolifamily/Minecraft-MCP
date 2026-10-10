@@ -14,8 +14,7 @@ import java.util.Properties
  * A missing file yields an empty map (not an error) — the caller ([McpVersions.required] / [McpVersions.optional])
  * decides whether a given key is mandatory.
  */
-abstract class PropertiesFileValueSource :
-    ValueSource<Map<String, String>, PropertiesFileValueSource.Params> {
+abstract class PropertiesFileValueSource : ValueSource<Map<String, String>, PropertiesFileValueSource.Params> {
 
     interface Params : ValueSourceParameters {
         val file: RegularFileProperty

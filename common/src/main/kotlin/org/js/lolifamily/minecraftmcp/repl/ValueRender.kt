@@ -13,9 +13,12 @@ import java.util.IdentityHashMap
  * reachable by `is` here only when they arrive boxed, which `yield`'s `reified` parameter guarantees; a
  * single-tick value-class RESULT does not, since it is read back off an unboxed backing field.
  *
- * A container is walked only when the walk CHANGES something, so a type keeps its own `toString()` unless it
- * holds something opaque. A container reached from inside itself renders as [CYCLE], and that counts as a
- * change — so a cyclic value never falls back to the `toString()` that would follow the cycle forever.
+ * A type keeps its own `toString()` unless it holds something opaque, and only a walk can tell — so every
+ * container is walked, and the walk stands when it changed something. Where `toString()` is a stock one
+ * ([SELF_RENDERING]) it stands when it changed nothing too: unchanged, it IS that string, which `toString()` would
+ * only print again. Only a type with a format of its own pays for a second pass. A container reached from inside
+ * itself renders as [CYCLE], and that counts as a change — so a cyclic value never falls back to the
+ * `toString()` that would follow the cycle forever.
  *
  * Everything appends into ONE builder and answers with a Boolean, so the payload is materialized exactly once.
  * A String per node costs one copy per level of nesting plus one for the head — at depth 1, the whole payload.
@@ -34,6 +37,24 @@ internal object ValueRender {
      *  the ancestor list, so its size IS the depth; no counter to thread through. */
     private const val MAX_NESTING = 64
 
+    /**
+     * Whether a class's `toString()` prints exactly what an unchanged walk of it printed, so the walk can stand in
+     * for it: the JDK's stock printers — `AbstractCollection`'s `[a, b]`, `AbstractMap`'s `{k=v}`, the formats
+     * [Sink.walk] and [Sink.walkMap] copy (their `(this ...)` never meets an unchanged walk: a self-reference is a
+     * [CYCLE]) — and Pair/Triple, final, whose `(a, b)` is the tuple walk's own.
+     *
+     * By the DECLARING class, not `is`: extending `AbstractList` says nothing of who overrides `toString()` further
+     * down. Every other format keeps the rollback, even one that only LOOKS the same — a wrong guess costs a wrong
+     * line, caution a second pass. A ClassValue: the reflection runs once per class, and a snippet's class still
+     * unloads with its loader. A class reflection cannot read answers false — the rollback again.
+     */
+    private val SELF_RENDERING = object : ClassValue<Boolean>() {
+        override fun computeValue(c: Class<*>): Boolean = c == Pair::class.java || c == Triple::class.java ||
+            runCatching { c.getMethod("toString").declaringClass }.getOrNull().let {
+                it == java.util.AbstractCollection::class.java || it == java.util.AbstractMap::class.java
+            }
+    }
+
     /** The builder, not a String: the head is already in it when the payload lands, so it costs no copy of its
      *  own. Both callers consume it at once — one `toString()`, one `append`. */
     fun line(type: String, value: Any?): StringBuilder {
@@ -51,11 +72,11 @@ internal object ValueRender {
          *  code that recurses over the structure being walked, so equality would blow the stack this protects. */
         private val chain: MutableSet<Any> = Collections.newSetFromMap(IdentityHashMap())
 
-        /** Append [v]'s rendering, falling back to its own `toString()` and containing whatever it throws. */
+        /** Append [v]'s rendering, containing whatever its `toString()` throws. */
         fun render(v: Any) {
             val mark = sb.length
             try {
-                if (!shape(v)) sb.append(v)
+                shape(v)
             } catch (t: Throwable) {
                 sb.setLength(mark)
                 sb.append(threw(v, t))
@@ -63,14 +84,14 @@ internal object ValueRender {
         }
 
         /**
-         * Append [v]'s repair; false when `toString()` is already the best answer.
+         * Append [v]'s rendering — a repair, or its own `toString()` — and answer whether it was a repair.
          *
-         * On false the buffer is left as it was found — [descend] rolls a walk back, every other branch appends
-         * nothing until it has decided, and only a THROW leaves a partial render, which [element] undoes. A new
-         * branch owes the same.
+         * Every branch appends, true or false: on false the buffer ends in exactly `v.toString()`, which is what lets
+         * [descend] keep an unchanged walk rather than ask `toString()` for the same string again. Only a THROW leaves
+         * a partial render, which [element] undoes. A new branch owes the same.
          */
         fun shape(v: Any): Boolean = flatArray(v) || when (v) {
-            is String -> ambiguousBare(v).also { if (it) sb.append('"').append(v).append('"') }
+            is String -> ambiguousBare(v).also { if (it) sb.append('"').append(v).append('"') else sb.append(v) }
             // Walked like any other container, NOT contentDeepToString(): that repairs nested ARRAYS and
             // nothing else, so one Array<*> on the path stranded everything beneath it on its own toString().
             // `always`: an array's toString() is an address, so the walk always changes it.
@@ -86,8 +107,11 @@ internal object ValueRender {
             // and that arity counts a suspend lambda's hidden Continuation (`suspend () -> Unit` reads as
             // `<function1>`). Under the SPLIT kotlin regime `is Function` answers false for a snippet's own lambda,
             // which keeps its address — a miss, not a fault.
-            is Function<*> -> (!overridesToString(v)).also { if (it) sb.append("<lambda>") }
-            else -> false
+            is Function<*> -> (!overridesToString(v)).also { if (it) sb.append("<lambda>") else sb.append(v) }
+            else -> {
+                sb.append(v)
+                false
+            }
         }
 
         /** Tried BEFORE the container branches: a boxed unsigned array implements `java.util.Collection`, so
@@ -113,10 +137,11 @@ internal object ValueRender {
             return true
         }
 
-        /** [v] is on the chain for the duration of [body], and the buffer is rolled back when [body] repaired
-         *  nothing. Removed on the way out: the same list twice as SIBLINGS is not a cycle. Depth is measured
-         *  here rather than per element, since only a container can be descended into — a scalar sitting at the
-         *  limit is a leaf, and reads as itself. */
+        /** [v] is on the chain for the duration of [body]. A walk that repaired nothing stands where it already reads
+         *  as `v.toString()` ([SELF_RENDERING]), and is rolled back for [v]'s own format everywhere else. Removed on
+         *  the way out: the same list twice as SIBLINGS is not a cycle. Depth is measured here rather than per
+         *  element, since only a container can be descended into — a scalar sitting at the limit is a leaf, and reads
+         *  as itself. */
         private inline fun descend(v: Any, body: () -> Boolean): Boolean {
             if (chain.size >= MAX_NESTING) {
                 sb.append(TOO_DEEP)
@@ -126,15 +151,19 @@ internal object ValueRender {
             chain.add(v)
             try {
                 if (body()) return true
-                sb.setLength(mark)
-                return false
             } finally {
                 chain.remove(v)
             }
+            if (!SELF_RENDERING.get(v.javaClass)) {
+                sb.setLength(mark)
+                sb.append(v)
+            }
+            return false
         }
 
         /** [owner] is what joins the chain; [items] is what gets rendered — the same object for a collection, an
-         *  array view for an array, its components for a tuple. */
+         *  array view for an array, its components for a tuple. Its `[a, b]` is `AbstractCollection`'s and its
+         *  `(a, b)` the tuples', to the character: [SELF_RENDERING] lets an unchanged walk stand on that. */
         private fun walk(owner: Any, items: Iterable<*>, open: Char, close: Char, always: Boolean): Boolean = descend(owner) {
             var repaired = always
             sb.append(open)
@@ -148,7 +177,8 @@ internal object ValueRender {
             repaired
         }
 
-        /** `AbstractMap`'s own `{k=v, k2=v2}`, so a walked map reads the same as an unwalked one. */
+        /** `AbstractMap`'s own `{k=v, k2=v2}`, so a walked map reads the same as an unwalked one — and
+         *  [SELF_RENDERING] counts on it: change the format and an unchanged walk no longer IS `toString()`. */
         private fun walkMap(map: Map<*, *>): Boolean = descend(map) {
             var repaired = false
             sb.append('{')
@@ -177,11 +207,11 @@ internal object ValueRender {
             }
             val mark = sb.length
             return try {
-                if (shape(e)) true else { sb.append(e); false }
+                shape(e)
             } catch (t: Throwable) {
                 // Roll back first: a throw is the one thing that leaves half a subtree behind. A caught
-                // toString() IS a repair — count it as none and the container falls back to its own toString(),
-                // which throws again for this very element.
+                // toString() IS a repair — count it as none and a container above falls back to its own
+                // toString(), which throws again for this very element.
                 sb.setLength(mark)
                 sb.append(threw(e, t))
                 true

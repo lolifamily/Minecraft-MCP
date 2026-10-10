@@ -9,10 +9,10 @@ pluginManagement {
         maven { name = "Sponge"; url = uri("https://repo.spongepowered.org/repository/maven-public") } // org.spongepowered.*
         maven { name = "Forge"; url = uri("https://maven.minecraftforge.net") }         // net.minecraftforge.*
     }
-    // Plugin versions resolve build-wide from here; the projects that apply them do so with no version. Kotlin,
-    // Dokka, ben-manes, ktlint and detekt (buildSrc classpath), Loom (fabric's own buildscript{}) and Unimined
-    // (common's own buildscript{}) are deliberately absent — see those files. A plugin listed BOTH here and on the
-    // buildSrc classpath loads twice, and the second scope dies with "No service of type ClassLoaderScope".
+    // Plugin versions resolve build-wide from here; the projects that apply them do so with no version. Every other
+    // plugin is deliberately absent — it rides the buildSrc classpath, a project's own buildscript{}, or an inline
+    // version in the project that applies it; see those files. A plugin listed BOTH here and on the buildSrc
+    // classpath loads twice, and the second scope dies with "No service of type ClassLoaderScope".
     plugins {
         id("net.neoforged.moddev") version "2.0.147"
     }
@@ -23,7 +23,7 @@ plugins {
 }
 
 rootProject.name = "Minecraft-MCP"
-// Fabric + Forge exist for every MC version we target, so they're always here. common/bridge too.
+// Everything except :neoforge builds for every MC version we target, so it's always included.
 include("common")
 include("fabric")
 include("forge")
@@ -33,10 +33,11 @@ include("paper")
 // NeoForge only exists from 1.20.1, so include :neoforge ONLY when the active node ships NeoForge coordinates — a
 // node without it never configures the project and can't fail on missing coords. Resolution order mirrors
 // McpVersions.
-val active: String = (startParameter.projectProperties["mcVersion"]
-    ?: System.getenv("MCP_MC_VERSION")
-    ?: file("versions/current").let { if (it.exists()) it.readText() else "1.20.6" }
-).trim()
+val active: String = (
+    startParameter.projectProperties["mcVersion"]
+        ?: System.getenv("MCP_MC_VERSION")
+        ?: file("versions/current").let { if (it.exists()) it.readText() else "1.20.6" }
+    ).trim()
 
 // The `mc` catalog isn't queryable here (it's realized during project resolution, not settings evaluation), so
 // gate on neoforge_loader_version_range — a NeoForge-only key that stays in the node's gradle.properties.

@@ -273,11 +273,11 @@ internal fun mixinOverlayPlan(jarEntries: Map<File, List<String>>, rename: Overl
  * Its own thread because it is jar I/O and outlasts the shard pool, so it starts first and is joined after —
  * it touches no Mixin state, [MixinProbe] having resolved all of that to plain data before the plan existed.
  * A failure costs only the declarations: the answer is false and nothing stale is prepended, while the shards
- * still stamp — snippets just have to cast to reach what Mixin merged, until the next rebuild retries.
+ * still stamp — snippets just have to cast to reach what Mixin merged, until the next launch retries.
  */
 internal fun alongsideMixinOverlay(plan: MixinPlan?, out: File, main: () -> Unit): Boolean {
+    out.delete() // a later hit must find this build's jar or none; one that outlives this leaves the build unstamped
     if (plan == null) {
-        out.delete() // a stamped build must not leave one behind for a later cache hit to prepend
         main()
         return false
     }
@@ -291,7 +291,7 @@ internal fun alongsideMixinOverlay(plan: MixinPlan?, out: File, main: () -> Unit
             AtomicFiles.publishing(out.toPath()) { tmp -> grafted = plan.build(tmp) }
             published = true
         } catch (t: Throwable) {
-            Constants.LOG.warn("[mcp-aw/mixin] overlay failed, retried on the next shard rebuild: {}", "$t")
+            Constants.LOG.warn("[mcp-aw/mixin] overlay failed, retried next launch: {}", "$t")
         }
         elapsed = (System.nanoTime() - started) / 1_000_000
     }, "mcp-aw-mixin").apply {

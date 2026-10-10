@@ -4,6 +4,7 @@ import org.js.lolifamily.minecraftmcp.exec.Capture
 import org.js.lolifamily.minecraftmcp.exec.GuardLane
 import org.js.lolifamily.minecraftmcp.repl.MaskingBridge
 import java.io.File
+import java.util.function.BooleanSupplier
 
 /**
  * Masking-owned [MaskingBridge]: forwards REPL calls to [ReplHost] and remap-cache calls to
@@ -14,22 +15,16 @@ class MaskingBridgeImpl : MaskingBridge {
     override fun preload(): Boolean = ReplHost.preload()
     override fun warm() { ReplHost.warm() }
     override fun recordWorkingSet(path: String) { ReplHost.recordWorkingSet(path) }
-    override fun compile(code: String, cpFiles: List<File>, guardLane: GuardLane?, evalId: Int): Any =
-        ReplHost.compile(code, cpFiles, guardLane, evalId)
+    override fun compile(code: String, cpFiles: List<File>, guardLane: GuardLane?, evalId: Int, abandoned: BooleanSupplier): Any =
+        ReplHost.compile(code, cpFiles, guardLane, evalId, abandoned)
     override fun execute(handle: Any, code: String, out: Capture): Any = ReplHost.execute(handle as PlainEngine.Compiled, code, out)
     override fun buildCompiler(cpFiles: List<File>) { ReplHost.buildCompiler(cpFiles) }
 
-    override fun buildArtifacts(clientTxt: String, secondSource: String, runtimeMcUri: String, outMappings: String, outSymbolsDir: String) {
-        RemapCacheBuilder.buildArtifacts(clientTxt, secondSource, runtimeMcUri, outMappings, outSymbolsDir)
+    override fun assembleMappings(clientTxt: String, secondSource: String, outMappings: String) {
+        RemapCacheBuilder.assembleMappings(clientTxt, secondSource, outMappings)
     }
 
-    override fun buildForgeArtifacts(
-        joinedTsrg: String,
-        clientTxt: String,
-        runtimeMcUri: String,
-        outMappings: String,
-        outSymbolsDir: String,
-    ) {
-        RemapCacheBuilder.buildForgeArtifacts(joinedTsrg, clientTxt, runtimeMcUri, outMappings, outSymbolsDir)
+    override fun buildSymbols(runtimeMcUri: String, mappings: String, outSymbolsDir: String) {
+        RemapCacheBuilder.buildSymbols(runtimeMcUri, mappings, outSymbolsDir)
     }
 }

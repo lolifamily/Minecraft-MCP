@@ -61,7 +61,8 @@ internal fun widenClasspath(entries: List<CpEntry>, pinned: LanguageVersion?): L
         // The quiet path says so out loud: it opens no zip and writes nothing, so with no line of its own a
         // working cache and a pass that never ran look identical in the log.
         Constants.LOG.info("[mcp-aw] {} shard(s) reused, nothing rebuilt", shards.size)
-        return listOfNotNull(mixinOverlay.takeIf { it.isFile }) + shardPlan.out.values + files
+        // The switch is in no stamp: off, a jar a launch with it on left behind is not reused.
+        return listOfNotNull(mixinOverlay.takeIf { it.isFile && MixinProbe.enabled }) + shardPlan.out.values + files
     }
 
     // Past the hit check: a hit must not pay for parsing the mappings.
@@ -86,7 +87,12 @@ internal fun widenClasspath(entries: List<CpEntry>, pinned: LanguageVersion?): L
         written = buildShards(shardPlan.stale, shardPlan.out, OverlayBuild(jarEntries, renameFor, pinned, failed))
     }
 
-    sweepStale(dir, publishStamps(dir, shards, shardPlan.out, failed, wantEnv) + mixinOverlay.name)
+    // A jar this build did not publish is still there, and a hit would take it for this one's: stamp nothing.
+    if (!withMixin && mixinOverlay.isFile) {
+        Constants.LOG.warn("[mcp-aw/mixin] previous {} could not be removed; nothing stamped, the next launch rebuilds", mixinOverlay.name)
+    } else {
+        sweepStale(dir, publishStamps(dir, shards, shardPlan.out, failed, wantEnv) + mixinOverlay.name)
+    }
     Constants.LOG.info(
         "[mcp-aw] {} of {} shard(s) rebuilt: {} classes{}",
         shardPlan.stale.size, shards.size, written,

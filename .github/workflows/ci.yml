@@ -82,13 +82,14 @@ jobs:
       # detektMain, not detekt: in detekt 2.x the plain `detekt` task runs WITHOUT type
       # resolution, so every rule needing type info silently passes. checkstyleMain is spelled
       # all-lowercase "checkstyle" — "checkStyleMain" misses Gradle's camel-case matching.
-      # --continue so all three tools report in one run instead of stopping at the first.
+      # buildSrc is a build of its own, which no unqualified name reaches, so its tasks go by
+      # path. --continue so all three tools report in one run instead of stopping at the first.
       # A lint failure never fails the leg: that would block `needs: build` and leave the
       # draft release unfrozen. The lint job reddens the run instead.
       - id: lint
         name: Lint
         continue-on-error: true
-        run: ./gradlew -PmcVersion=${{ matrix.mc }} detektMain ktlintCheck checkstyleMain --continue
+        run: ./gradlew -PmcVersion=${{ matrix.mc }} detektMain ktlintCheck checkstyleMain :buildSrc:detektMain :buildSrc:ktlintCheck --continue
 
       # Leading colon: an unqualified name matches every project and writes one site each.
       - name: Dokka

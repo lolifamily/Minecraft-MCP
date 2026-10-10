@@ -24,6 +24,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
+import java.util.function.BooleanSupplier;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 
@@ -31,9 +32,9 @@ import java.util.jar.JarFile;
  * Game-loader side of the REPL. Builds the {@link MaskingClassLoader}, crosses into the masking world
  * with a single reflective bootstrap of {@code ...repl.impl.MaskingBridgeImpl} — reached type-safely
  * thereafter through the shared {@link MaskingBridge} interface — and caches the result so every
- * {@link #compile(String, GuardLane, int)} / {@link #execute(Object, String, Capture)} after the first is a warm call. The
- * same bridge also fronts the remap-cache builder ({@link #buildRemapArtifacts}), so ALL masking-only calls
- * share this one hop.
+ * {@link #compile(String, GuardLane, int, BooleanSupplier)} / {@link #execute(Object, String, Capture)} after
+ * the first is a warm call. The same bridge also fronts the remap-cache builder ({@link #assembleMappings},
+ * {@link #buildSymbols}), so ALL masking-only calls share this one hop.
  *
  * <p>Why reflection: {@code MaskingBridgeImpl} and its backends ({@code ReplHost}, {@code RemapCacheBuilder})
  * link the Kotlin scripting / remapper APIs, which live only on the masking loader's urls (see
@@ -98,20 +99,23 @@ public final class ReplBridge {
      * @param guardLane the target lane's scriptguard, woven into the snippet as a per-tick timeout check, or
      *                  {@code null} for the off-tick parallel lane (no watchdog)
      * @param evalId    the kill id that fires THIS eval's woven check
+     * @param abandoned true once nothing will read the result — the eval was cancelled or reaped. A compile
+     *                  still queued then never starts, and one under way stops at its next phase; both throw
+     *                  {@link java.util.concurrent.CancellationException}
      * @return an opaque compiled-script handle for {@link #execute(Object, String, Capture)}
      * @throws Exception if masking-loader init or compilation fails
      */
-    public static Object compile(String code, GuardLane guardLane, int evalId) throws Exception {
+    public static Object compile(String code, GuardLane guardLane, int evalId, BooleanSupplier abandoned) throws Exception {
         ensureInit();
-        return host.compile(code, classpath, guardLane, evalId);
+        return host.compile(code, classpath, guardLane, evalId, abandoned);
     }
 
     /**
-     * Run a handle from {@link #compile(String, GuardLane, int)} and return an {@code exec.Outcome} (result text +
-     * isError) or, if the snippet's value was a stdlib {@code iterator { ... yield() ... }}, an
-     * {@code exec.IterEval} for the lane to drive one step per tick.
+     * Run a handle from {@link #compile(String, GuardLane, int, BooleanSupplier)} and return an
+     * {@code exec.Outcome} (result text + isError) or, if the snippet's value was a stdlib
+     * {@code iterator { ... yield() ... }}, an {@code exec.IterEval} for the lane to drive one step per tick.
      *
-     * @param handle a handle from {@link #compile(String, GuardLane, int)}
+     * @param handle a handle from {@link #compile(String, GuardLane, int, BooleanSupplier)}
      * @param code   the original source, so compile diagnostics can echo the offending line
      * @param out    the sink the snippet's {@code println} writes to; the caller owns it, so a kill, cancel or
      *               timeout can still report what was printed before the eval ended
@@ -346,45 +350,37 @@ public final class ReplBridge {
     }
 
     /**
-     * Cross into the masking loader (mapping-io + tiny-remapper live only there) to assemble the
-     * remap mappings and reverse-remap the runtime jar into a mojmap symbol jar. Called by {@link RemapCache}
-     * during init on a non-mojmap runtime with no {@code mcp.remap.*} flags.
+     * Cross into the masking loader (mapping-io + tiny-remapper live only there) to assemble the remap mappings:
+     * the half of the bundle that depends on the MC version alone. Called by {@link RemapCache} on a non-mojmap
+     * runtime with no {@code mcp.remap.*} flags, when no mappings are cached for this version yet.
      *
-     * @param clientTxt     path to the Mojang client mappings ({@code client.txt})
-     * @param secondSource  the runtime's CLASS names, which {@code clientTxt} cannot supply — told apart by
-     *                      extension. Either the fabric intermediary MAPPINGS jar
-     *                      ({@code net.fabricmc:intermediary:<ver>:v2}), read for its
-     *                      {@code mappings/mappings.tiny}, or spigot BuildData's {@code bukkit-<ver>-cl.csrg}.
-     *                      NOT a Minecraft jar either way; the jar that gets reverse-remapped is {@code mcUri}.
-     * @param mcUri         CodeSource URI of the runtime Minecraft jar — the LOADER's view of it, so on FML a
-     *                      {@code union:} URI whose overlaid binpatches are part of what gets reverse-remapped
-     * @param outMappings   output path for the assembled mappings
-     * @param outSymbolsDir output directory for the generated mojmap symbol jar(s)
-     * @throws Exception if masking-loader init or artifact building fails
+     * @param clientTxt    path to the Mojang client mappings ({@code client.txt})
+     * @param secondSource the runtime names {@code clientTxt} cannot supply — told apart by extension. MCPConfig's
+     *                     {@code joined.tsrg} (obf → srg, forge), spigot BuildData's {@code bukkit-<ver>-cl.csrg},
+     *                     or the fabric intermediary MAPPINGS jar ({@code net.fabricmc:intermediary:<ver>:v2}),
+     *                     read for its {@code mappings/mappings.tiny}. Never a Minecraft jar: that one is
+     *                     {@link #buildSymbols}'s.
+     * @param outMappings  output path for the assembled mappings: {@code .tsrg} on forge, {@code .tiny} otherwise
+     * @throws Exception if masking-loader init or assembly fails
      */
-    public static void buildRemapArtifacts(String clientTxt, String secondSource, String mcUri,
-                                           String outMappings, String outSymbolsDir) throws Exception {
+    public static void assembleMappings(String clientTxt, String secondSource, String outMappings) throws Exception {
         ensureMasking();
-        host.buildArtifacts(clientTxt, secondSource, mcUri, outMappings, outSymbolsDir);
+        host.assembleMappings(clientTxt, secondSource, outMappings);
     }
 
     /**
-     * Forge Mixed-SRG analog of {@link #buildRemapArtifacts}: assemble {@code srg_to_official.tsrg} from
-     * MCPConfig {@code joinedTsrg} (obf → srg) + Mojang {@code clientTxt}, and reverse-remap the Mixed-SRG
-     * runtime jar into a mojmap symbol jar.
+     * Reverse-remap the runtime jar through cached mappings into a mojmap symbol jar: the half of the bundle the
+     * loader's binpatches are baked into, and the only half a loader change rebuilds — locally, without the network.
      *
-     * @param joinedTsrg    path to MCPConfig's {@code joined.tsrg} (obf → srg)
-     * @param clientTxt     path to the Mojang client mappings ({@code client.txt})
-     * @param mcUri         CodeSource URI of the Mixed-SRG runtime Minecraft jar — see
-     *                      {@link #buildRemapArtifacts}
-     * @param outMappings   output path for the assembled mappings
-     * @param outSymbolsDir output directory for the generated mojmap symbol jar(s)
-     * @throws Exception if masking-loader init or artifact building fails
+     * @param mcUri         CodeSource URI of the runtime Minecraft jar — the LOADER's view of it, so on FML a
+     *                      {@code union:} URI whose overlaid binpatches are part of what gets reverse-remapped
+     * @param mappings      the mappings {@link #assembleMappings} wrote; its extension picks the provider
+     * @param outSymbolsDir output directory for the generated mojmap symbol jar and its {@code deps.txt}
+     * @throws Exception if masking-loader init or the remap fails
      */
-    public static void buildForgeArtifacts(String joinedTsrg, String clientTxt, String mcUri,
-                                           String outMappings, String outSymbolsDir) throws Exception {
+    public static void buildSymbols(String mcUri, String mappings, String outSymbolsDir) throws Exception {
         ensureMasking();
-        host.buildForgeArtifacts(joinedTsrg, clientTxt, mcUri, outMappings, outSymbolsDir);
+        host.buildSymbols(mcUri, mappings, outSymbolsDir);
     }
 
     /**
@@ -523,6 +519,8 @@ public final class ReplBridge {
                 }
             }
             if (!fresh) {
+                // Dropped before any jar moves, so an extraction that dies midway leaves no stamp to vouch for the mix.
+                Files.deleteIfExists(stampFile.toPath());
                 for (JarEntry e : nested) {
                     // No mkdirs: nothing nests under prefix, so dest's parent is cacheDir, created above.
                     File dest = new File(cacheDir, e.getName().substring(prefix.length()));

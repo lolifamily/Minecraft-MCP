@@ -18,6 +18,7 @@ import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.util.function.BooleanSupplier
 
 /**
  * The REPL host. Loaded BY the masking loader (child-first) and reached from
@@ -133,7 +134,7 @@ object ReplHost {
         try {
             // Not an IterEval => compile or eval failed (both return an Outcome rather than throw), so nothing
             // past the compiler got warmed. Silence there would read as success.
-            val r = execute(compile(src, cp, null, 0), src, Capture())
+            val r = execute(compile(src, cp, null, 0, { false }), src, Capture())
             if (r is IterEval) {
                 r.iterator.hasNext()
             } else {
@@ -177,13 +178,19 @@ object ReplHost {
      *  under. Minted here so the compiler and the failure report can never disagree about which eval it was. */
     private val evalSeq = AtomicLong()
 
-    /** Compile [code]. Off-tick; [PlainEngine] serializes compilation. */
-    internal fun compile(code: String, cpFiles: List<File>, guardLane: GuardLane?, evalId: Int): PlainEngine.Compiled {
+    /** Compile [code]. Off-tick; [PlainEngine] serializes compilation, and gives one up once [abandoned]. */
+    internal fun compile(
+        code: String,
+        cpFiles: List<File>,
+        guardLane: GuardLane?,
+        evalId: Int,
+        abandoned: BooleanSupplier,
+    ): PlainEngine.Compiled {
         lastClasspath = cpFiles
         buildCompiler(cpFiles)
         val sourceName = "mcp_eval_${evalSeq.incrementAndGet()}"
         try {
-            return PlainEngine.compile(code, sourceName, guardLane, evalId)
+            return PlainEngine.compile(code, sourceName, guardLane, evalId, abandoned)
         } catch (t: Throwable) {
             // Always rethrows — [spilling] hands back the original untouched unless it is carrying an IR dump,
             // so a control-flow throwable passes through as if this catch were not here.

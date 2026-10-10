@@ -43,40 +43,47 @@ import java.util.jar.JarOutputStream
  * Pipeline: pivot proguard(named<->official) and fabric intermediary(official<->intermediary) on the shared
  * official names (mapping-io's descriptor-aware merge — overload-safe), then reverse-remap the runtime MC jar
  * into a mojmap symbol jar (the compile classpath a production runtime otherwise lacks).
+ *
+ * One entry per half of the bundle — [assembleMappings] answers to the MC version, [buildSymbols] to the
+ * loader — so a loader change reruns only the second, from mappings already on disk.
  */
 object RemapCacheBuilder {
 
     /**
-     * Assemble [outMappings] (tiny v2, named<->intermediary) from the downloaded [clientTxt] (Mojang proguard)
-     * + [secondSource], then reverse-remap [runtimeMcUri] (the loader's view of the runtime jar) into
-     * `<outSymbolsDir>/mc-symbols.jar` (mojmap names, for the Kotlin compiler). Callers gate on the outputs
-     * already existing.
-     *
-     * [secondSource] carries the runtime's CLASS names, which proguard cannot: a fabric intermediary jar, or
-     * a spigot `.csrg`, told apart by extension. Both runtimes move both axes, so both need one.
+     * Assemble [outMappings] from the downloaded [clientTxt] (Mojang proguard) + [secondSource], which carries the
+     * runtime names proguard cannot — told apart by extension: MCPConfig's `joined.tsrg` (forge's srg members, out
+     * as TSRG2), or spigot BuildData's `.csrg` / the fabric intermediary jar (both runtimes move both axes; out as
+     * tiny v2). The MC-version half of the bundle: nothing here depends on the loader.
      */
-    fun buildArtifacts(clientTxt: String, secondSource: String, runtimeMcUri: String, outMappings: String, outSymbolsDir: String) {
-        val mappings = Paths.get(outMappings)
-        mappings.parent?.let { Files.createDirectories(it) }
+    fun assembleMappings(clientTxt: String, secondSource: String, outMappings: String) {
+        val out = Paths.get(outMappings)
+        out.parent?.let { Files.createDirectories(it) }
         val t0 = System.nanoTime()
         when {
-            secondSource.endsWith(".csrg") -> assembleSpigot(Paths.get(clientTxt), Paths.get(secondSource), mappings)
-            secondSource.isNotEmpty() -> assemble(Paths.get(clientTxt), Paths.get(secondSource), mappings)
-            else -> error("buildArtifacts needs a second mapping source (fabric intermediary jar or spigot .csrg)")
+            secondSource.endsWith(".tsrg") -> assembleForge(Paths.get(secondSource), Paths.get(clientTxt), out)
+            secondSource.endsWith(".csrg") -> assembleSpigot(Paths.get(clientTxt), Paths.get(secondSource), out)
+            secondSource.isNotEmpty() -> assemble(Paths.get(clientTxt), Paths.get(secondSource), out)
+            else -> error("assembleMappings needs a second mapping source (joined.tsrg, spigot .csrg or fabric intermediary jar)")
         }
-        val t1 = System.nanoTime()
+        org.js.lolifamily.minecraftmcp.Constants.LOG.info(
+            "[mcp-remap] assembled {} ({}ms)", out.fileName, (System.nanoTime() - t0) / 1_000_000,
+        )
+    }
 
+    /**
+     * Reverse-remap [runtimeMcUri] (the loader's view of the runtime jar, binpatches included) through [mappings]
+     * into `<outSymbolsDir>/mc-symbols.jar` (mojmap names, for the Kotlin compiler), then harvest its `deps.txt`.
+     * The loader half of the bundle. The mappings' extension picks the provider: forge's TSRG2 maps `left`
+     * (Mixed-SRG) to `right` and carries no field descriptors; tiny maps the runtime slot `intermediary` to `named`.
+     */
+    fun buildSymbols(runtimeMcUri: String, mappings: String, outSymbolsDir: String) {
+        val m = Paths.get(mappings)
+        val tsrg = mappings.endsWith(".tsrg")
         val symDir = File(outSymbolsDir)
         symDir.mkdirs()
         val symJar = File(symDir, RemapBundle.MC_SYMBOLS).toPath()
-        reverseRemapJar(
-            Paths.get(URI.create(runtimeMcUri)), symJar,
-            TinyUtils.createTinyMappingProvider(mappings, "intermediary", "named"), false, "reverseRemap",
-        )
-        org.js.lolifamily.minecraftmcp.Constants.LOG.info(
-            "[mcp-remap] symbol build split: assemble={}ms reverseRemapJar={}ms",
-            (t1 - t0) / 1_000_000, (System.nanoTime() - t1) / 1_000_000,
-        )
+        val provider = if (tsrg) tsrgProvider(m, "left", "right") else TinyUtils.createTinyMappingProvider(m, "intermediary", "named")
+        reverseRemapJar(Paths.get(URI.create(runtimeMcUri)), symJar, provider, tsrg, if (tsrg) "reverseRemapForge" else "reverseRemap")
         writeDeps(symJar)
     }
 
@@ -194,7 +201,7 @@ object RemapCacheBuilder {
             // compile-classpath cache: DEFLATE is pure waste here, and STORED also skips inflate when the compiler
             // indexes it. Only remapped .class files (the compiler needs signatures, not the jar's non-class
             // resources — so no addNonClassFiles). apply() is parallel → the sink is called from many threads, so
-            // serialize the JarOutputStream under a lock. Same STORED writer pattern as CompileClasspath.widenClasspath.
+            // serialize the JarOutputStream under a lock. Same STORED writer pattern as the access-widen overlay.
             val lock = Any()
             val crc = java.util.zip.CRC32()
             AtomicFiles.publishing(out) { tmp ->
@@ -288,27 +295,6 @@ object RemapCacheBuilder {
     // ============================================================================================
     // Forge Mixed-SRG branch (≤1.20.5 runtimes).
     // ============================================================================================
-
-    /**
-     * Assemble [outMappings] (TSRG2 srg_to_official: left=srg-hybrid right=named) from MCPConfig [joinedTsrg]
-     * (obf->srg) + Mojang [clientTxt] (named<->obf), then reverse-remap the Mixed-SRG [runtimeMcUri] (readable
-     * class + srg member) into `<outSymbolsDir>/mc-symbols.jar` (readable class + named member) for the
-     * Kotlin compiler.
-     */
-    fun buildForgeArtifacts(joinedTsrg: String, clientTxt: String, runtimeMcUri: String, outMappings: String, outSymbolsDir: String) {
-        val mappings = Paths.get(outMappings)
-        mappings.parent?.let { Files.createDirectories(it) }
-        assembleForge(Paths.get(joinedTsrg), Paths.get(clientTxt), mappings)
-
-        val symDir = File(outSymbolsDir)
-        symDir.mkdirs()
-        val symJar = File(symDir, RemapBundle.MC_SYMBOLS).toPath()
-        reverseRemapJar(
-            Paths.get(URI.create(runtimeMcUri)), symJar,
-            tsrgProvider(mappings, "left", "right"), true, "reverseRemapForge",
-        )
-        writeDeps(symJar)
-    }
 
     /** srg<->named via obf pivot, emitting the hybrid TSRG2 forge_gradle uses: readable class names on BOTH
      *  sides (from Mojang — MCPConfig's own srg class names are obfuscated) + f_/m_ members on the left, named

@@ -67,13 +67,15 @@ internal class EvalTask(
         val th = Thread({
             // This thread owns the future until onCompiled hands the task to a driver.
             try {
-                handle = ReplBridge.compile(code, guardLane, id) // OFF-TICK: instrument+remap
+                handle = ReplBridge.compile(code, guardLane, id, future::isDone) // OFF-TICK: instrument+remap
                 onCompiled(this) // now eligible to be executed on the tick
             } catch (t: Throwable) {
                 // Full chain, not "$t": a compiler internal error names only itself at the top ("Exception while
                 // generating code for: <IR dump>") and carries the actual fault two causes down. toString() drops
                 // every cause and every frame, so the one line that identifies the bug never reaches the caller.
-                future.complete(Outcome("eval failed to start:\n" + EvalRender.stack(t), true))
+                // Deferred, as in fail(): an abandoned compile ends here too, its future already answered, so this
+                // render never runs; and a render that throws reaches the caller rather than stranding it.
+                future.complete(Outcome(true) { "eval failed to start:\n" + EvalRender.stack(t) })
             }
         }, "mcp-compile-$id")
         th.isDaemon = true
@@ -119,7 +121,7 @@ internal class EvalTask(
 
     /** Reap: this eval's lane will never step it again. Stop driving and complete with a "killed" result —
      *  isError rather than silence, which would leak the blocked request — keeping whatever it had printed.
-     *  Stops the eval by the same two mechanisms as [cancel]. */
+     *  Stops the eval by the same three mechanisms as [cancel]. */
     fun kill(reason: String) {
         if (future.isDone) return
         dead = true
@@ -132,7 +134,9 @@ internal class EvalTask(
      * whatever the eval had printed, tagged `(cancelled)` and marked isError. Idempotent; a no-op if the eval
      * already finished.
      *
-     * Two mechanisms stop the eval, and [kill] uses the same pair:
+     * Three mechanisms stop the eval, and [kill] uses the same three:
+     *  - completing [future] — the compile polls it ([start]): one still waiting its turn never starts, and
+     *    one under way stops before its next phase. Polled, not interrupted: `PlainEngine.compile` says why.
      *  - `dead = true` — observed at the next [pumpStep] entry. Enough for the heartbeat lanes and for a
      *    cross-tick iterator between elements.
      *  - `worker?.interrupt()` — an off-tick [ParallelLane] worker can be blocked inside a single long step

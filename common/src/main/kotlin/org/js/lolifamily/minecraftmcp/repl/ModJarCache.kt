@@ -41,8 +41,8 @@ internal object ModJarCache {
             // No container: fall back to plain existence (the pre-stamp behavior) rather than record an
             // entry that can never be checked.
             val stamp = containerOf(root)?.let { stampOf(it) }
-            if (!jar.isFile || (stamp != null && old[name] != stamp)) writeJar(root, jar)
-            if (stamp != null) now[name] = stamp
+            if (!jar.isFile || (stamp != null && old[name] != rowOf(stamp, jar))) writeJar(root, jar)
+            if (stamp != null) now[name] = rowOf(stamp, jar)
             return jar
         } catch (t: Throwable) {
             Constants.LOG.warn("[mcp-repl/mods] repack failed for {}", root, t)
@@ -110,9 +110,13 @@ internal object ModJarCache {
      *  unlike a zip entry's DOS field it needs no timezone and survives one changing. */
     private fun stampOf(c: File): String = "${c.canonicalPath}|${c.length()}|${c.lastModified()}"
 
+    /** [stamp] plus [jar]'s own `size|mtime`: every rewrite is a new file, so a row the stamp file never caught
+     *  up with — killed before [writeStamps], or that write failing — stops matching the bytes it would vouch for. */
+    private fun rowOf(stamp: String, jar: File): String = "$stamp|${jar.length()}|${jar.lastModified()}"
+
     private fun stampFile(): File = Services.PLATFORM.cacheDir.resolve("mod-jars.stamp").toFile()
 
-    /** cache jar name -> container stamp. One file, not a `.stamp` per jar: sidecars would go stale
+    /** cache jar name -> its [rowOf]. One file, not a `.stamp` per jar: sidecars would go stale
      *  themselves, and nothing here deletes cache files. */
     fun readStamps(): Map<String, String> {
         val f = stampFile()

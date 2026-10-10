@@ -9,12 +9,14 @@ import org.js.lolifamily.minecraftmcp.repl.RemapBundle
 import org.objectweb.asm.ClassReader
 import org.objectweb.asm.ClassVisitor
 import org.objectweb.asm.ClassWriter
+import org.objectweb.asm.ConstantDynamic
 import org.objectweb.asm.FieldVisitor
 import org.objectweb.asm.Handle
 import org.objectweb.asm.Label
 import org.objectweb.asm.MethodVisitor
 import org.objectweb.asm.Opcodes
 import org.objectweb.asm.Type
+import org.objectweb.asm.tree.ClassNode
 import java.io.File
 
 /** Build the stock scripting classloader over our (instrumented, maybe-remapped) bytes, so it keeps the
@@ -118,12 +120,18 @@ private fun instrument(cof: Map<String, ByteArray>, guardLane: GuardLane, evalId
     return out
 }
 
-/** ASM [ClassWriter] with COMPUTE_FRAMES whose `getCommonSuperClass` falls back to Object instead of
- *  throwing when a frame merge needs a script-defined class not yet loadable during instrumentation.
- *  Shared by both bytecode passes below ([instrumentClass] and [widenAccessClass]). */
-private fun robustClassWriter(cr: ClassReader): ClassWriter = object : ClassWriter(cr, COMPUTE_FRAMES) {
-    override fun getCommonSuperClass(type1: String, type2: String): String =
-        try { super.getCommonSuperClass(type1, type2) } catch (_: Throwable) { "java/lang/Object" }
+/** ASM [ClassWriter] with COMPUTE_FRAMES that merges any two different reference types to Object — what kotlinc's
+ *  own writer answers too (`ClassBuilderFactories.BinaryClassWriter`), so the recomputed frames are never less
+ *  precise than the ones they replace. Sound only on kotlinc's invariant: a value is cast to its expected type
+ *  before a merge, or before any use that needs more than Object (an interface is Object to the verifier). Both
+ *  passes keep it — widening only ever erases a type toward Object, and the guard's branches join identical states —
+ *  while javac output, which never casts an upcast, would not carry it.
+ *
+ *  Not ASM's default, which loads both names through this class's own loader: the module being woven is bytes no
+ *  loader has seen, and for every other name the answer cannot matter. Shared by both bytecode passes below
+ *  ([instrumentClass] and [widenAccessClass]). */
+private fun frameWriter(cr: ClassReader): ClassWriter = object : ClassWriter(cr, COMPUTE_FRAMES) {
+    override fun getCommonSuperClass(type1: String, type2: String): String = "java/lang/Object"
 }
 
 /** ASM core pass inlining the guard at every method entry EXCEPT `<init>`/`<clinit>`, plus every loop back-edge
@@ -135,7 +143,7 @@ private fun robustClassWriter(cr: ClassReader): ClassWriter = object : ClassWrit
  *  An entry guard there would have to sit before the super call, where `this` is still uninitialized. */
 private fun instrumentClass(bytes: ByteArray, guardLane: GuardLane, evalId: Int): ByteArray {
     val cr = ClassReader(bytes)
-    val cw = robustClassWriter(cr)
+    val cw = frameWriter(cr)
     @Suppress("ktlint:standard:wrapping")
     cr.accept(object : ClassVisitor(Opcodes.ASM9, cw) {
         override fun visitMethod(a: Int, n: String?, d: String?, s: String?, e: Array<String>?): MethodVisitor =
@@ -229,7 +237,12 @@ private class GuardMethodVisitor(mv: MethodVisitor, mn: String, private val guar
 // names passed through as bootstrap String arguments for AccessBridge to recover. Accessible types are left
 // precise, so the hot path keeps its inlining.
 //
-// Not fixable this way: NEW and INSTANCEOF on an inaccessible class — see visitTypeInsn.
+// A value that crossed the bridge is therefore an Object to the verifier for good, so every consumer of one must
+// be erased or bridged too: a type instruction moves into the bridge (visitTypeInsn), and so does every super call,
+// and a constructor call where it has to (bridgeSpecial).
+//
+// What stays out, each explained where it is decided: creating or catching a non-public class (visitTypeInsn), and
+// super(...) past what invokespecial allows (bridgeSpecial).
 // ============================================================================================
 
 /** A real class entry: a `.class` name whose bytes actually carry the JVM magic. */
@@ -299,7 +312,7 @@ private fun widenAccess(cof: Map<String, ByteArray>): Map<String, ByteArray> {
 
 private fun widenAccessClass(bytes: ByteArray, declaredHere: (String, String, String) -> Boolean): ByteArray {
     val cr = ClassReader(bytes)
-    val cw = robustClassWriter(cr)
+    val cw = frameWriter(cr)
     @Suppress("ktlint:standard:wrapping")
     cr.accept(object : ClassVisitor(Opcodes.ASM9, cw) {
         // Erasure has to CASCADE into the snippet's OWN declarations. Once a value's type is erased to
@@ -315,14 +328,19 @@ private fun widenAccessClass(bytes: ByteArray, declaredHere: (String, String, St
         override fun visitMethod(access: Int, name: String, desc: String, sig: String?, exc: Array<String>?): MethodVisitor {
             val e = AccessWideningVisitor.eraseMethodDesc(desc)
             val mv = super.visitMethod(access, name, e, if (e == desc) sig else null, exc)
-            return AccessWideningVisitor(mv, declaredHere)
+            return AccessWideningVisitor(mv, declaredHere, if (name == "<init>") cr.superName else null)
         }
     }, ClassReader.SKIP_FRAMES)
     return cw.toByteArray()
 }
 
-internal class AccessWideningVisitor(mv: MethodVisitor, private val declaredHere: (String, String, String) -> Boolean) :
-    MethodVisitor(Opcodes.ASM9, mv) {
+/** [superInit] is the direct superclass when the visited method is a constructor, null otherwise — see
+ *  [bridgeSpecial]. */
+internal class AccessWideningVisitor(
+    mv: MethodVisitor,
+    private val declaredHere: (String, String, String) -> Boolean,
+    private val superInit: String?,
+) : MethodVisitor(Opcodes.ASM9, mv) {
     override fun visitFieldInsn(opcode: Int, owner: String, name: String, descriptor: String) {
         // Ours first, so the invariant is read off the declaring class rather than inferred from a name shape:
         // our own declarations were erased, so the access must agree with them — and we reach them directly, no
@@ -361,6 +379,7 @@ internal class AccessWideningVisitor(mv: MethodVisitor, private val declaredHere
     override fun visitMethodInsn(opcode: Int, owner: String, name: String, descriptor: String, isInterface: Boolean) {
         // Same rule as visitFieldInsn; what a bridge can carry at all is [bridgeable].
         val ours = declaredHere(owner, name, descriptor)
+        if (opcode == Opcodes.INVOKESPECIAL && !ours && bridgeSpecial(owner, name, descriptor, isInterface)) return
         if (ours || !bridgeable(opcode, owner, name)) {
             super.visitMethodInsn(
                 opcode, owner, name,
@@ -385,20 +404,81 @@ internal class AccessWideningVisitor(mv: MethodVisitor, private val declaredHere
     }
 
     /**
-     * A `CHECKCAST` to an inaccessible class is itself access-checked, so a cast the Kotlin compiler emitted
-     * around a value we just erased would re-introduce the failure the erasure avoids. Widen it to Object —
-     * the value already is of that type at runtime; the cast existed only to satisfy the verifier.
+     * Reroutes a class's invokespecial through the bridge. A super call always goes, as every other call to a
+     * foreign member does: [AccessBridge.superCall] opens the method, and its erased descriptor takes an argument
+     * that crossed the bridge as Object. A constructor goes only where the call as written would fail — its
+     * descriptor names a type the bridge erased, so verification would fail, and the whole class with it; or the
+     * constructor itself is not public ([closedInit]) — since rerouting one costs a discarded allocation. True if
+     * [owner]'s call was rerouted.
      *
-     * `NEW` and `INSTANCEOF` are left alone: both name a specific class and neither survives erasure, so a
-     * snippet that allocates or type-tests a package-private class still fails.
+     * A rerouted constructor keeps its NEW and DUP, so the class still initializes where it did:
+     * [AccessBridge.construct] builds the instance, and the two uninitialized copies under it are dropped. Only a
+     * NEW's `<init>` can go that way. A `super(...)`/`this(...)` initializes `this`, which nothing but invokespecial
+     * can do, so it stays as written and fails past what invokespecial allows: a non-public constructor, an erased
+     * argument. The verifier's own rule tells the two apart — such a call exists only in a constructor and names the
+     * class itself (ours, never here) or its direct superclass, [superInit] — except for a NEW of the direct
+     * superclass inside a constructor, which stays as written too, deliberately: telling it apart would take state
+     * carried across instructions, for a shape a snippet almost never writes.
+     *
+     * Only a class's call is rerouted. An interface's super call, `super<I>.m()`, stays as written: a default method
+     * is public, and none in the game names a type a snippet cannot, so there is nothing for the bridge to do.
+     */
+    private fun bridgeSpecial(owner: String, name: String, descriptor: String, isInterface: Boolean): Boolean {
+        if (isInterface || !shouldWiden(owner)) return false
+        if (name != "<init>") {
+            val indyDesc = "(" + erase("L$owner;") + eraseMethodDesc(descriptor).substring(1)
+            val bsm = Handle(Opcodes.H_INVOKESTATIC, BRIDGE, "superCall", BSM3, false)
+            super.visitInvokeDynamicInsn("call", indyDesc, bsm, owner, name, descriptor)
+            return true
+        }
+        if (owner == superInit) return false
+        if (eraseMethodDesc(descriptor) == descriptor && !closedInit(owner, descriptor)) return false
+        // The constructor's descriptor with the instance as its result: `(...)V` → `(...)Lowner;`.
+        val bsm = Handle(Opcodes.H_INVOKESTATIC, BRIDGE, "construct", BSM2, false)
+        super.visitInvokeDynamicInsn("new", eraseMethodDesc(descriptor.dropLast(1) + "L$owner;"), bsm, owner, descriptor)
+        super.visitInsn(Opcodes.DUP_X2)   // [new, new, obj] → [obj, new, new, obj]
+        super.visitInsn(Opcodes.POP)
+        super.visitInsn(Opcodes.POP)
+        super.visitInsn(Opcodes.POP)
+        return true
+    }
+
+    /**
+     * A type instruction naming a class a snippet cannot is itself access-checked. Each of the three with a fixed
+     * stack shape therefore moves into the bridge, which loads the class by name, where loading is not
+     * access-checked, and keeps the instruction's own semantics:
+     *  - CHECKCAST: the same check, still an Object, or an array of Object, to the verifier. It cannot stay as
+     *    written: kotlinc emits one on its own wherever a value flows into a slot of that type. Most are upcasts, but
+     *    an `as`, or a value read out of a generic container, is a real check.
+     *  - INSTANCEOF: `is` and `as?`.
+     *  - ANEWARRAY: a real array of that class, typed as an array of Object.
+     * A class literal, `::class`, moves into the bridge too: see [visitLdcInsn]. And `when (x) { is ... }` is one of
+     * these INSTANCEOFs, PlainEngine compiling it as a chain of type checks.
+     *
+     * NEW stays as written, deliberately: its uninitialized object lives across the whole argument list, so carrying
+     * it would mean lifting each NEW out of its arguments — far more rewriting than a snippet that creates a
+     * non-public class is worth. So does a `catch` of one, deliberately too: it is an exception-table entry, not an
+     * instruction, and carrying it would mean rewriting the handler. Both fail with IllegalAccessError.
      */
     override fun visitTypeInsn(opcode: Int, type: String) {
-        if (opcode == Opcodes.CHECKCAST && shouldWiden(type) && inaccessible(type)) {
-            super.visitTypeInsn(opcode, "java/lang/Object")
-            return
+        val desc = if (type.startsWith("[")) type else "L$type;"
+        val erased = erase(desc)
+        when {
+            erased == desc -> super.visitTypeInsn(opcode, type)
+            opcode == Opcodes.CHECKCAST -> typeIndy("checkCast", "(Ljava/lang/Object;)$erased", type)
+            opcode == Opcodes.INSTANCEOF -> typeIndy("instanceOf", "(Ljava/lang/Object;)Z", type)
+            opcode == Opcodes.ANEWARRAY -> typeIndy("newArray", "(I)[$erased", type)   // its operand is the element type
+            else -> super.visitTypeInsn(opcode, type)   // NEW, deliberately: see above
         }
-        super.visitTypeInsn(opcode, type)
     }
+
+    /** A class literal, `::class`, of a class a snippet cannot name, as a dynamic constant [AccessBridge.classConstant]
+     *  resolves by name, where loading is not access-checked: still a constant, now one the snippet can load. */
+    override fun visitLdcInsn(value: Any?) = super.visitLdcInsn(if (value is Type && closedClass(value)) classConstant(value) else value)
+
+    /** A type instruction on [type] — an internal name, or an array descriptor — as an indy through [bootstrap]. */
+    private fun typeIndy(bootstrap: String, desc: String, type: String) =
+        super.visitInvokeDynamicInsn(bootstrap, desc, Handle(Opcodes.H_INVOKESTATIC, BRIDGE, bootstrap, BSM1, false), type)
 
     /**
      * Lambdas (`LambdaMetafactory` call sites the Kotlin compiler emits). Two things here name a type we
@@ -430,8 +510,7 @@ internal class AccessWideningVisitor(mv: MethodVisitor, private val declaredHere
                         }
                     // The owner + index pin this to a MethodType, so `a.sort` adds nothing. Every other
                     // bootstrap's arguments are somebody else's too, and pass through for the same reason.
-                    is Type ->
-                        if (bsm.owner == LMF && i == INSTANTIATED_TYPE) Type.getMethodType(eraseMethodDesc(a.descriptor)) else a
+                    is Type -> if (bsm.owner == LMF && i == INSTANTIATED_TYPE) Type.getMethodType(eraseMethodDesc(a.descriptor)) else a
                     else -> a
                 }
             },
@@ -440,10 +519,23 @@ internal class AccessWideningVisitor(mv: MethodVisitor, private val declaredHere
 
     companion object {
         private const val BRIDGE = "org/js/lolifamily/minecraftmcp/repl/AccessBridge"
+        private const val BSM1 = "(Ljava/lang/invoke/MethodHandles\$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;" +
+            "Ljava/lang/String;)Ljava/lang/invoke/CallSite;"
         private const val BSM2 = "(Ljava/lang/invoke/MethodHandles\$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;" +
             "Ljava/lang/String;Ljava/lang/String;)Ljava/lang/invoke/CallSite;"
         private const val BSM3 = "(Ljava/lang/invoke/MethodHandles\$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;" +
             "Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/invoke/CallSite;"
+        private const val CONDY = "(Ljava/lang/invoke/MethodHandles\$Lookup;Ljava/lang/String;Ljava/lang/Class;" +
+            "Ljava/lang/String;)Ljava/lang/Class;"
+
+        /** Whether [type], an `ldc` constant, is a class a snippet cannot name; a method type never is. */
+        private fun closedClass(type: Type): Boolean = type.sort != Type.METHOD && erase(type.descriptor) != type.descriptor
+
+        /** [type] as a dynamic constant resolved through [AccessBridge.classConstant]. */
+        private fun classConstant(type: Type): ConstantDynamic {
+            val bsm = Handle(Opcodes.H_INVOKESTATIC, BRIDGE, "classConstant", CONDY, false)
+            return ConstantDynamic("class", "Ljava/lang/Class;", bsm, type.internalName)
+        }
 
         private const val LMF = "java/lang/invoke/LambdaMetafactory"
 
@@ -451,7 +543,7 @@ internal class AccessWideningVisitor(mv: MethodVisitor, private val declaredHere
          *  argument describing the impl handle rather than the interface. See [visitInvokeDynamicInsn]. */
         private const val INSTANTIATED_TYPE = 2
 
-        /** The JVM's two initializer methods: never dispatched through the bridge. */
+        /** The JVM's two initializer methods: never a call [bridgeable] takes. */
         private val NON_INDY_METHODS = setOf("<init>", "<clinit>")
 
         private val OPAQUE = arrayOf(
@@ -470,9 +562,8 @@ internal class AccessWideningVisitor(mv: MethodVisitor, private val declaredHere
         // arrives as a descriptor ([I) instead — it breaks that contract, and has nothing to widen anyway.
         fun shouldWiden(owner: String): Boolean = !owner.startsWith("[") && OPAQUE.none { owner.startsWith(it) }
 
-        /** Whether a call site can be rewritten to an [AccessBridge] indy at all: a widenable owner, and
-         *  neither of the two shapes a bridge cannot carry — the JVM's initializers, and INVOKESPECIAL
-         *  super-calls. */
+        /** Whether a call site always goes through an [AccessBridge] indy: a widenable owner, and neither an
+         *  initializer nor an INVOKESPECIAL — those are [bridgeSpecial]'s. */
         fun bridgeable(opcode: Int, owner: String, name: String): Boolean =
             shouldWiden(owner) && name !in NON_INDY_METHODS && opcode != Opcodes.INVOKESPECIAL
 
@@ -496,6 +587,20 @@ internal class AccessWideningVisitor(mv: MethodVisitor, private val declaredHere
             } catch (_: Throwable) {
                 false
             }
+        }
+
+        /**
+         * True if [owner]'s constructor [desc] is not public. Read like [inaccessible], with the same default —
+         * anything unreadable counts as public — but not cached: unlike a type, which every descriptor names again,
+         * it is asked only about the constructors a snippet calls, and those are few and seldom repeated.
+         */
+        fun closedInit(owner: String, desc: String): Boolean = try {
+            Constants.MC_LOADER.getResourceAsStream("$owner.class")?.use { s ->
+                val node = ClassNode().also { ClassReader(s.readBytes()).accept(it, DECLARATIONS_ONLY) }
+                node.methods.any { it.name == "<init>" && it.desc == desc && (it.access and Opcodes.ACC_PUBLIC) == 0 }
+            } ?: false
+        } catch (_: Throwable) {
+            false
         }
 
         /**

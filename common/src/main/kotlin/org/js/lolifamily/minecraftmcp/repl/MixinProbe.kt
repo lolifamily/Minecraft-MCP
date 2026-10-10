@@ -40,6 +40,12 @@ object MixinProbe {
     /** Kill switch for the declaration overlay. */
     const val ENABLED = "mcp.mixin.overlay"
 
+    /** [ENABLED] alone: touches no Mixin, so a cache hit can afford to ask. Logs off here, since a hit that
+     *  finds the jar never derives. */
+    val enabled: Boolean by lazy {
+        Props.bool(ENABLED, true).also { if (!it) Constants.LOG.info("[mcp-aw/mixin] declaration overlay off: {}=false", ENABLED) }
+    }
+
     /** One declared member. */
     class Member(val name: String, val desc: String, val access: Int)
 
@@ -78,10 +84,7 @@ object MixinProbe {
     // ---- derivation ---------------------------------------------------------------------------
 
     private fun derive(): Map<String, Decls> {
-        if (!Props.bool(ENABLED, true)) {
-            Constants.LOG.info("[mcp-aw/mixin] declaration overlay off: {}=false", ENABLED)
-            return emptyMap()
-        }
+        if (!enabled) return emptyMap()
         // Absent by platform rather than by breakage — no Mixin at all. Stay quiet.
         val processor = runCatching {
             val env = Class.forName("org.spongepowered.asm.mixin.MixinEnvironment", false, Constants.GAME_LOADER)

@@ -81,6 +81,35 @@ dependencies {
     testImplementation("org.jetbrains.kotlin:kotlin-test:2.4.20")
 }
 
+// The libraries common's signatures name that publish an API reference, so Dokka links their types instead of
+// printing them as plain text. Nothing else common leans on has one to link: the Kotlin compiler and its scripting
+// API ship empty javadoc jars, the Analysis API's site is a guide with no per-class reference, and IntelliJ's classes
+// sit under relocated names no published docs carry. Neither has Minecraft: Mojang publishes no reference, and Yarn's
+// javadoc names the same classes differently, so linking it would turn plain text into dead links.
+dokka {
+    dokkaSourceSets.configureEach {
+        externalDocumentationLinks.register("kotlin-metadata-jvm") {
+            url("https://kotlinlang.org/api/kotlinx-metadata-jvm/")
+            packageListUrl("https://kotlinlang.org/api/kotlinx-metadata-jvm/kotlin-metadata-jvm/package-list")
+        }
+        externalDocumentationLinks.register("asm") {
+            url("https://asm.ow2.io/javadoc/")
+            packageListUrl("https://asm.ow2.io/javadoc/element-list")
+        }
+        // multiloader-common's byte-buddy pin: the two move together.
+        externalDocumentationLinks.register("byte-buddy") {
+            url("https://javadoc.io/doc/net.bytebuddy/byte-buddy/1.18.14/")
+            packageListUrl("https://javadoc.io/static/net.bytebuddy/byte-buddy/1.18.14/package-list")
+        }
+        // Fabric's fork, built on the same Mixin 0.8.7 common compiles against: upstream's own javadoc host no
+        // longer answers, and org.spongepowered:mixin is not on Maven Central for javadoc.io to serve.
+        externalDocumentationLinks.register("mixin") {
+            url("https://javadoc.io/doc/net.fabricmc/sponge-mixin/0.17.4+mixin.0.8.7/")
+            packageListUrl("https://javadoc.io/static/net.fabricmc/sponge-mixin/0.17.4+mixin.0.8.7/element-list")
+        }
+    }
+}
+
 // Consumable side of common's source injection into each loader (java / resources / kotlin dirs). The loaders'
 // resolvable counterparts + wiring live in multiloader-loader.
 configurations.create("commonJava") {

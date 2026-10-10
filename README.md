@@ -200,6 +200,15 @@ Evaluate Kotlin inside the running game. The **last expression is the return val
   are callable **directly, no reflection** — across the game's own classes *and* other mods. Only the JVM's hardest
   `private`-across-loaders cases still need reflection. One consequence: an opened field outranks a
   same-named getter/setter, so `obj.foo` reads the *field* — write `obj.getFoo()` to go through the method.
+  Constructors open the same way, `private` and `protected` ones included. What stays closed:
+  - **Creating or catching a non-`public` class, deliberately.** `new` and `catch` of one fail with
+    `IllegalAccessError`; everything else — its values, `as`, `is`/`as?`, `::class`, arrays of it — works.
+    Carrying those two would take far more bytecode rewriting than the rare snippet that wants one is worth;
+    reach for reflection there.
+  - **The `super(...)` of a game class you extend**, past what the JVM itself allows — the JVM's rule, not a
+    choice, since only the constructor call itself may initialize the object it builds. A non-`public`
+    constructor fails with `IllegalAccessError`; a value of a non-`public` class as its argument fails with
+    `VerifyError` once your class loads.
 - **Output.** A shadowed `println(...)` / `print(...)` writes to a per-eval sink returned with the result —
   every call that reaches it before the eval returns, from whatever thread, including ones the snippet
   spawned itself. After the return the sink is emptied and later writes are dropped, not buffered.

@@ -13,11 +13,12 @@ import java.util.concurrent.Executors
  * per-version mapping data. On a Fabric intermediary runtime with no `mcp.remap.*` flags set, this
  * downloads the two per-version artifacts that ARE published (Mojang client mappings + fabric intermediary),
  * assembles named<->intermediary, and reverse-remaps the runtime jar into a mojmap symbol jar — caching
- * everything under the mod's cache dir, one subdirectory per MC version. On later launches it's a cache hit.
+ * everything under the mod's cache dir, one subdirectory per MC version. On later launches it's a cache hit,
+ * and a loader change rebuilds only the symbol jar, from the mappings already there.
  *
  * Runs on the game loader (network + JSON via MC's bundled Gson live here). The two library operations that
  * need mapping-io + tiny-remapper (assemble + reverse-remap) are done on the masking loader via
- * [ReplBridge.buildRemapArtifacts] / [ReplBridge.buildForgeArtifacts].
+ * [ReplBridge.assembleMappings] / [ReplBridge.buildSymbols].
  */
 object RemapCache {
 
@@ -32,7 +33,7 @@ object RemapCache {
     /**
      * The remap bundle for a non-mojmap runtime, building the cache on first launch. Null on mojmap
      * (dev / NeoForge production / Fabric dev), on an unsupported namespace, and on failure — which degrades
-     * this process to no-remap; the next relaunch rebuilds (an incomplete cache re-downloads).
+     * this process to no-remap; the next relaunch rebuilds what is missing (only missing mappings download).
      *
      * Called once from [CommonClass.init] on the `mcp-remap-init` thread; a second call hands back what the
      * first published rather than rebuilding.
@@ -48,6 +49,10 @@ object RemapCache {
             return it
         }
         val ns = NamespaceProbe.current()
+        val assembleMappings = assemblerFor(ns) ?: run {
+            Constants.LOG.warn("[mcp-remap] {} auto-cache unsupported; supply mcp.remap.mappings + mcp.remap.classpath manually", ns)
+            return null
+        }
 
         try {
             // The CodeSource URI, NOT JarLocator.toJarFile(): that resolves a union DOWN to its primary backing
@@ -65,31 +70,31 @@ object RemapCache {
             val tsrg = ns == NamespaceProbe.Namespace.MIXED_SRG
             val mappings = cacheDir.resolve(if (tsrg) "mappings.tsrg" else "mappings.tiny")
             val symbolsDir = cacheDir.resolve("symbols")
+            val stamp = symbolsDir.resolve(RemapBundle.LOADER_STAMP)
 
             // isComplete, not hasSymbols: a cache written before deps.txt existed has to REBUILD rather than be
             // reused, or the API-dependency jars it never harvested stay silently missing from the compile cp.
             // The stamp is a third term rather than part of isComplete: that one answers "is this dir a bundle",
             // which ClasspathCollector depends on too; this one answers "was it built by THIS loader".
             if (Files.isRegularFile(mappings) && RemapBundle.isComplete(symbolsDir) &&
-                runCatching { Files.readString(symbolsDir.resolve(RemapBundle.LOADER_STAMP)) }.getOrNull() == loaderStamp
+                runCatching { Files.readString(stamp) }.getOrNull() == loaderStamp
             ) {
                 Constants.LOG.info("[mcp-remap] reusing cached remap bundle at {}", cacheDir)
             } else {
-                when (ns) {
-                    NamespaceProbe.Namespace.INTERMEDIARY -> build(mcUri, version, cacheDir, mappings, symbolsDir)
-                    NamespaceProbe.Namespace.MIXED_SRG -> buildForge(mcUri, version, cacheDir, mappings, symbolsDir)
-                    NamespaceProbe.Namespace.SPIGOT -> buildSpigot(mcUri, version, cacheDir, mappings, symbolsDir)
-                    else -> {
-                        Constants.LOG.warn(
-                            "[mcp-remap] {} auto-cache unsupported; supply mcp.remap.mappings + mcp.remap.classpath manually",
-                            ns,
-                        )
-                        return null
-                    }
+                // Dropped first: a build that dies midway must not leave the old loader's stamp over what it replaced.
+                Files.deleteIfExists(stamp)
+                // The mappings answer to the MC version alone, which this dir already is, so being there is being
+                // valid: only they download, and a loader change rebuilds just the symbol jar, locally.
+                if (Files.isRegularFile(mappings)) {
+                    Constants.LOG.info("[mcp-remap] mappings cached; rebuilding only the symbol jar for {}", loaderStamp)
+                } else {
+                    assembleMappings(version, cacheDir, mappings)
                 }
-                // After the builders' own checkArtifacts, never before: a stamp over half-written artifacts is a
-                // cache hit nothing can invalidate.
-                AtomicFiles.publishing(symbolsDir.resolve(RemapBundle.LOADER_STAMP)) { it.toFile().writeText(loaderStamp) }
+                ReplBridge.buildSymbols(mcUri, mappings.toString(), symbolsDir.toString())
+                checkArtifacts("$ns build", mappings, symbolsDir)
+                // After checkArtifacts, never before: a stamp over half-written artifacts is a cache hit nothing
+                // can invalidate.
+                AtomicFiles.publishing(stamp) { it.toFile().writeText(loaderStamp) }
             }
 
             Constants.LOG.info("[mcp-remap] remap bundle ready (mappings + symbols) under {}", cacheDir)
@@ -117,8 +122,16 @@ object RemapCache {
             return Services.PLATFORM.platformId + if (bukkit != null) "/$bukkit" else ""
         }
 
-    /** Download the per-version sources, then hop to the masking loader to assemble + reverse-remap. */
-    private fun build(mcUri: String, version: String, cacheDir: Path, mappings: Path, symbolsDir: Path) {
+    /** [ns]'s download-and-assemble for the MC-version half of the bundle, or null where there is no auto-cache. */
+    private fun assemblerFor(ns: NamespaceProbe.Namespace): ((String, Path, Path) -> Unit)? = when (ns) {
+        NamespaceProbe.Namespace.INTERMEDIARY -> ::assembleFabric
+        NamespaceProbe.Namespace.MIXED_SRG -> ::assembleForge
+        NamespaceProbe.Namespace.SPIGOT -> ::assembleSpigot
+        else -> null
+    }
+
+    /** Download the per-version sources, then hop to the masking loader to assemble them. */
+    private fun assembleFabric(version: String, cacheDir: Path, mappings: Path) {
         Constants.LOG.warn(
             "[mcp-remap] FIRST LAUNCH on a Fabric intermediary runtime: downloading + building the remap " +
                 "bundle for MC {} (one-time, ~10s + a few MB)...",
@@ -141,17 +154,12 @@ object RemapCache {
             Files.size(clientTxt), Files.size(interJar),
         )
 
-        ReplBridge.buildRemapArtifacts(
-            clientTxt.toString(), interJar.toString(), mcUri, mappings.toString(), symbolsDir.toString(),
-        )
-
-        checkArtifacts("build", mappings, symbolsDir)
-        Constants.LOG.info("[mcp-remap] built remap bundle: mappings={}B, symbols dir={}", Files.size(mappings), symbolsDir)
+        ReplBridge.assembleMappings(clientTxt.toString(), interJar.toString(), mappings.toString())
     }
 
     /** Forge Mixed-SRG variant: download MCPConfig (obf->srg) + Mojang (named<->obf), then hop to the masking
-     *  loader to assemble srg_to_official.tsrg + reverse-remap the Mixed-SRG runtime jar into a mojmap symbol jar. */
-    private fun buildForge(mcUri: String, version: String, cacheDir: Path, mappings: Path, symbolsDir: Path) {
+     *  loader to assemble srg_to_official.tsrg. */
+    private fun assembleForge(version: String, cacheDir: Path, mappings: Path) {
         Constants.LOG.warn(
             "[mcp-remap] FIRST LAUNCH on a forge Mixed-SRG runtime: downloading MCPConfig + Mojang mappings " +
                 "for MC {} (one-time)...",
@@ -168,19 +176,14 @@ object RemapCache {
             Files.size(zip), Files.size(clientTxt),
         )
 
-        ReplBridge.buildForgeArtifacts(
-            joined.toString(), clientTxt.toString(), mcUri, mappings.toString(), symbolsDir.toString(),
-        )
-
-        checkArtifacts("forge build", mappings, symbolsDir)
-        Constants.LOG.info("[mcp-remap] built forge remap bundle: mappings={}B, symbols dir={}", Files.size(mappings), symbolsDir)
+        ReplBridge.assembleMappings(clientTxt.toString(), joined.toString(), mappings.toString())
     }
 
     /** Spigot variant: Mojang's client_mappings (named<->obf) + BuildData's class csrg (obf->spigot), pivoted on
      *  obf. Two sources for the same reason fabric needs two — BOTH axes move on a spigot runtime. Members are
      *  the obf names, so proguard carries them; classes are spigot's OWN names (`BlockPos` is `BlockPosition`),
      *  which no Mojang artifact can express, so they take the second source. */
-    private fun buildSpigot(mcUri: String, version: String, cacheDir: Path, mappings: Path, symbolsDir: Path) {
+    private fun assembleSpigot(version: String, cacheDir: Path, mappings: Path) {
         Constants.LOG.warn(
             "[mcp-remap] FIRST LAUNCH on a spigot-mapped runtime: downloading Mojang + BuildData mappings " +
                 "for MC {} (one-time)...",
@@ -200,10 +203,7 @@ object RemapCache {
             Files.size(clientTxt), Files.size(clCsrg),
         )
 
-        ReplBridge.buildRemapArtifacts(clientTxt.toString(), clCsrg.toString(), mcUri, mappings.toString(), symbolsDir.toString())
-
-        checkArtifacts("spigot build", mappings, symbolsDir)
-        Constants.LOG.info("[mcp-remap] built spigot remap bundle: mappings={}B, symbols dir={}", Files.size(mappings), symbolsDir)
+        ReplBridge.assembleMappings(clientTxt.toString(), clCsrg.toString(), mappings.toString())
     }
 
     /** The builders hop to the masking loader and return void, so the artifacts landing on disk is their only

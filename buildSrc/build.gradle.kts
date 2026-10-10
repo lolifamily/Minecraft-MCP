@@ -3,15 +3,18 @@ plugins {
     // the precompiled *.gradle.kts convention plugins together, in one source set — so the convention scripts see the
     // helper classes with no extra classpath wiring.
     `kotlin-dsl`
-    // Versioned: the dependency below feeds the main build's buildscript, not buildSrc's own. Keep both in sync.
-    id("org.jetbrains.dokka") version "2.2.0"
+    // Versioned: the dependencies below feed the main build's buildscript, not buildSrc's own. Keep both in sync.
+    // The linters are mcp-base's, applied here by hand: a build can't apply the convention plugins it is compiling.
+    id("org.jetbrains.dokka") version "2.3.0-Beta"
+    id("org.jlleitschuh.gradle.ktlint") version "14.2.0"
+    id("dev.detekt") version "2.0.0-alpha.6"
 }
 
 // The Kotlin Gradle plugin is a buildSrc DEPENDENCY, not applied: multiloader-common references JvmTarget /
-// KotlinCompile directly, and buildSrc's classpath is the one classloader every subproject shares — so all four get
-// a SINGLE plugin load, no "plugin loaded multiple times in different subprojects" warning. Subprojects declare it
-// with no version. (`kotlin-dsl` applies Gradle's embedded Kotlin only to compile buildSrc; the mod's own kotlin
-// is the one declared below.)
+// KotlinCompile directly, and buildSrc's classpath is the one classloader every subproject shares — so every
+// project applying it gets a SINGLE plugin load, no "plugin loaded multiple times in different subprojects"
+// warning. Subprojects declare it with no version. (`kotlin-dsl` applies Gradle's embedded Kotlin only to compile
+// buildSrc; the mod's own kotlin is the one declared below.)
 repositories {
     gradlePluginPortal()
     mavenCentral()
@@ -27,17 +30,38 @@ dokka {
     }
 }
 
+// kotlin-dsl registers its generated sources as plain main.kotlin directories, not KGP's generatedKotlin, so the
+// linters take them for ours. Each is a source root of its own and patterns only match below the root, hence a
+// predicate on the file.
+val kotlinDslGenerated = Spec<FileTreeElement> { "/build/generated-sources/kotlin-dsl-" in it.file.invariantSeparatorsPath }
+
+// mcp-base's linter settings, which this build can't apply to itself; keep them in sync.
+ktlint {
+    version.set("1.8.0")
+    filter { exclude(kotlinDslGenerated) }
+}
+detekt {
+    buildUponDefaultConfig = true
+    config.setFrom(file("../config/detekt/detekt.yml"))
+}
+// The precompiled scripts are build scripts: ktlint's alone, as in the main build. detekt has no Gradle script
+// definition and resolves nothing in them (detekt/detekt#5501).
+tasks.withType<dev.detekt.gradle.Detekt>().configureEach {
+    exclude(kotlinDslGenerated)
+    exclude("**/*.gradle.kts")
+}
+
 dependencies {
     implementation("org.jetbrains.kotlin:kotlin-gradle-plugin:2.4.20")
     // Dokka — same buildSrc-classpath route as the Kotlin plugin above, so the multiloader-common convention's
     // `plugins.withId("org.jetbrains.dokka")` reacts to leaves applying it.
-    implementation("org.jetbrains.dokka:dokka-gradle-plugin:2.2.0")
+    implementation("org.jetbrains.dokka:dokka-gradle-plugin:2.3.0-Beta")
     // Same route, so the mcp-base convention can reference DependencyUpdatesTask / KtlintExtension /
     // DetektExtension directly. The rule for all three: on this classpath AND out of settings.gradle.kts's
     // pluginManagement — listed in both, a plugin loads twice and the second scope dies with
     // "No service of type ClassLoaderScope". None of them drags a kotlin-gradle-plugin of its own.
     implementation("io.github.ben-manes:gradle-versions-plugin:0.64.0")
     implementation("org.jlleitschuh.gradle:ktlint-gradle:14.2.0")
-    // 2.0.0-alpha line (new plugin id 'dev.detekt'): stable 1.23.8 rejects our JDK-25 build's --jvm-target 25.
+    // 2.0.0-alpha line (new plugin id 'dev.detekt'): the stable 1.x line rejects our JDK-25 build's --jvm-target 25.
     implementation("dev.detekt:detekt-gradle-plugin:2.0.0-alpha.6")
 }

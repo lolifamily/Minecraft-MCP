@@ -38,14 +38,8 @@ base {
     archivesName.set("$modId-${project.name}-$mcVersion$jijSuffix")
 }
 
-// Emitted class-file version = what the TARGET MC needs, not the build JDK. Per node: `bytecode_version`
-// (neoforge may override with `neoforge_bytecode_version`).
-val bytecodeVersion = (
-    if (project.name == "neoforge")
-        mcpVersions.optional("neoforge_bytecode_version").orElse(mcpVersions.required("bytecode_version"))
-    else
-        mcpVersions.required("bytecode_version")
-    ).get().toInt()
+// Emitted class-file version = what the TARGET MC needs, not the build JDK. Per node: `bytecode_version`.
+val bytecodeVersion = mcpVersions.required("bytecode_version").get().toInt()
 
 // Same level as Kotlin spells it: "1.8" for 8, the bare number from 9 up. Both JvmTarget entry points match that
 // string exactly — valueOf("JVM_8") and fromTarget("8") each throw — so normalize once, here.
@@ -53,11 +47,12 @@ val kotlinJvmTarget: String = if (bytecodeVersion == 8) "1.8" else "$bytecodeVer
 
 // Mixin's declared compatibilityLevel (the mixins.json template's JAVA_${mixin_compat}) guards the bytecode-level
 // features the mixin CLASSES use, not the JVM, so it may sit below bytecode_version. Forge's bundled Mixin caps
-// lower than ours — each node sets forge_mixin_compat.
-val mixinCompat = if (project.name == "forge")
+// lower than ours — nodes that exceed its cap set forge_mixin_compat.
+val mixinCompat = if (project.name == "forge") {
     mcpVersions.optional("forge_mixin_compat").map { it.toInt() }.getOrElse(bytecodeVersion)
-else
+} else {
     bytecodeVersion
+}
 
 java {
     toolchain.languageVersion.set(JavaLanguageVersion.of(javaVersion))
@@ -70,7 +65,7 @@ tasks.withType<JavaCompile>().configureEach {
 }
 
 // Pack javadocJar from Dokka HTML (the JDK Javadoc task is Kotlin-blind). Guarded by plugins.withId so it fires
-// only where Dokka is applied (common + the three loaders).
+// only where Dokka is applied.
 plugins.withId("org.jetbrains.dokka") {
     tasks.named("javadoc") { enabled = false }
     tasks.named<Jar>("javadocJar") {
@@ -91,9 +86,7 @@ plugins.withId("org.jetbrains.kotlin.jvm") {
     configure<KotlinJvmProjectExtension> {
         jvmToolchain(javaVersion)
     }
-    // Friend-path access to the scripting-compiler internals PlainEngine reaches: extractResultFields (what
-    // the script lowering recorded about the result) and findExpressionForResultProperty (which trailing
-    // statement becomes that result).
+    // Friend-path access to the scripting-compiler `internal` declarations PlainEngine reaches.
     val friendCfg = configurations.create("kotlinScriptingFriend") {
         isCanBeConsumed = false
         isCanBeResolved = true
@@ -113,7 +106,7 @@ plugins.withId("org.jetbrains.kotlin.jvm") {
             freeCompilerArgs.add("-Xsuppress-version-warnings")
             // -Xfriend-paths resolved lazily (config resolves at execution, not configuration time).
             freeCompilerArgs.add(
-                friendCfg.elements.map { locs -> "-Xfriend-paths=" + locs.joinToString(",") { it.asFile.absolutePath } }
+                friendCfg.elements.map { locs -> "-Xfriend-paths=" + locs.joinToString(",") { it.asFile.absolutePath } },
             )
         }
     }
@@ -204,10 +197,10 @@ dependencies {
     // legitimate SPLIT, which is a state this mod supports on purpose.
 
     // The Kotlin compiler, compile-only. Needed everywhere common Kotlin is compiled: common itself, and each
-    // loader re-compiling the injected common sources. PlainEngine links these at compile time; at runtime they
+    // loader re-compiling the injected common sources. The REPL links these at compile time; at runtime they
     // live ONLY on the self-managed masking loader, never on the game/module classpath. Embeddable variants, to
-    // match the runtime jars staged into mcp-kotlin. Of the scripting stack only two survive: `ScriptDiagnostic`
-    // out of scripting-common, and the script IR lowering plus a few reporting helpers out of the plugin.
+    // match the runtime jars staged into mcp-kotlin. Of the scripting stack only a handful of classes survive,
+    // out of scripting-common and the compiler plugin.
     compileOnly("org.jetbrains.kotlin:kotlin-scripting-common:2.4.20")
     compileOnly("org.jetbrains.kotlin:kotlin-scripting-compiler-embeddable:2.4.20")
     compileOnly("org.jetbrains.kotlin:kotlin-compiler-embeddable:2.4.20")
@@ -218,7 +211,7 @@ dependencies {
     compileOnly("net.bytebuddy:byte-buddy-agent:1.18.14")
     compileOnly(project(":bridge"))
 
-    // tiny-remapper + ASM, compile-only. ReplHost.kt links these to remap compiled-script bytecode
+    // tiny-remapper + ASM, compile-only. The REPL links these to remap compiled-script bytecode
     // (mojmap -> runtime namespace) on non-mojmap production runtimes.
     compileOnly("net.fabricmc:tiny-remapper:0.14.1")
     compileOnly("org.ow2.asm:asm") { version { prefer("9.10.1") } }
@@ -228,8 +221,8 @@ dependencies {
     // ClassNode for MixinProbe's declaration diff — Mixin's own transitive dep, so it is there whenever
     // that class has anything to do.
     compileOnly("org.ow2.asm:asm-tree") { version { prefer("9.10.1") } }
-    // Kotlin private/protected access: the access-widen overlay (CompileClasspath.widenClassFile) flips the visibility in each
-    // Kotlin class's @Metadata proto. kotlin-metadata-jvm is the stable read/modify/write API for that.
+    // Kotlin private/protected access: the access-widen overlay flips the visibility in each Kotlin class's
+    // @Metadata proto. kotlin-metadata-jvm is the stable read/modify/write API for that.
     compileOnly("org.jetbrains.kotlin:kotlin-metadata-jvm:2.4.20")
     // Forge Mixed SRG: RemapCacheBuilder.tsrgProvider reads forge's TSRG2 via mapping-io (tiny-remapper's
     // own transitive dep, runtime scope, so declare it explicitly for compile).
@@ -269,7 +262,7 @@ tasks.named<Jar>("jar") {
                 "Implementation-Version" to archiveVersion,
                 "Implementation-Vendor" to modAuthor,
                 "Built-On-Minecraft" to mcVersion,
-            )
+            ),
         )
     }
 }

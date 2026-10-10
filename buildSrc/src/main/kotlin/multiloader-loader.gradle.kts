@@ -68,7 +68,7 @@ dependencies {
         exclude(group = "org.ow2.asm", module = "asm-util")
     }
     // Kotlin private/protected access: kotlin-metadata-jvm read/modify/writes the @Metadata visibility in the
-    // access-widen overlay (see CompileClasspath.widenClassFile). Masking-loader tool lib, rides in mcp-kotlin.
+    // access-widen overlay. Masking-loader tool lib, rides in mcp-kotlin.
     "mcpKotlin"("org.jetbrains.kotlin:kotlin-metadata-jvm:2.4.20")
     // The Analysis API, relocated by :common into compiler-embeddable's namespace. Compile-only for the same
     // reason as the compiler above (this loader re-compiles common's injected sources), and staged into
@@ -130,14 +130,8 @@ tasks.register<Sync>("copyMcpKotlin") {
 
 // Run the GAME on a JDK matching the EMITTED bytecode, not the build JDK — a loader's bundled Mixin/ASM can't
 // read Java 25 (class major version 69).
-val runBytecodeVersion = (
-    if (project.name == "neoforge")
-        mcpVersions.optional("neoforge_bytecode_version").orElse(mcpVersions.required("bytecode_version"))
-    else
-        mcpVersions.required("bytecode_version")
-    ).get().toInt()
 val runLauncher = extensions.getByType<JavaToolchainService>().launcherFor {
-    languageVersion.set(JavaLanguageVersion.of(runBytecodeVersion))
+    languageVersion.set(JavaLanguageVersion.of(mcpVersions.required("bytecode_version").get().toInt()))
 }
 val runTaskNames = listOf("runServer", "runClient", "runData", "runGameTestServer", "Server", "Client", "Data")
 tasks.matching { it.name in runTaskNames }.configureEach {
@@ -145,8 +139,8 @@ tasks.matching { it.name in runTaskNames }.configureEach {
     dependsOn(":bridge:jar")   // the bootstrap bridge jar must exist before a run injects it
 }
 // Pin the run JVM to the bytecode version. Done in afterEvaluate so it WINS over neoforge's MDG, whose
-// ModDevRunWorkflow sets the run task's javaLauncher to the PROJECT toolchain (25) at plugin-apply time — a later
-// .set() overrides that. All three loaders' run tasks are JavaExec-based (the only ones exposing javaLauncher).
+// ModDevRunWorkflow sets the run task's javaLauncher to the PROJECT toolchain (the build JDK) at plugin-apply time —
+// a later .set() overrides that. Every loader's run tasks are JavaExec, the only task type exposing javaLauncher.
 project.afterEvaluate {
     tasks.withType<JavaExec>().matching { it.name in runTaskNames }.configureEach {
         javaLauncher.set(runLauncher)
@@ -154,8 +148,8 @@ project.afterEvaluate {
 }
 
 // Embed the Kotlin runtime + bridge jar as plain resources so a production server needs only the mod jar. On forge
-// the shippable artifact is jarJar (classifier null); fabric/neoforge use `jar`. tasks.matching is lazy — forge's
-// jarJar is created later by jarJarExt.register().
+// the shippable artifact is jarJar (classifier null); every other loader uses `jar`. tasks.matching is lazy —
+// forge's jarJar is created later by jarJarExt.register().
 val embedTask = if (project.name == "forge") "jarJar" else "jar"
 tasks.withType<Jar>().matching { it.name == embedTask }.configureEach {
     // Embed from the copyMcpKotlin STAGING DIR, not `from configurations.mcpKotlin`: forge's jarJar task silently

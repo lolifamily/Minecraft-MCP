@@ -280,4 +280,62 @@ public final class AccessBridge {
         }
         return new ConstantCallSite(mh.asType(type));
     }
+
+    // ---- type bootstraps --------------------------------------------------------------------
+    // For a type instruction on a class the snippet cannot name: the class is resolved here, by name, where loading
+    // is not access-checked. {@code owner} is an internal name, or an array descriptor.
+
+    /** Bootstrap {@code checkcast}. The identity handle takes exactly that class, so {@code asType} from the call
+     *  site's Object inserts checkcast's own check: null passes, anything else that is not an instance throws
+     *  ClassCastException. */
+    public static CallSite checkCast(MethodHandles.Lookup caller, String invokedName,
+                                     MethodType type, String owner) throws Throwable {
+        return new ConstantCallSite(MethodHandles.identity(resolve(owner, caller)).asType(type));
+    }
+
+    /** Bootstrap {@code instanceof}: {@link Class#isInstance} is the same test, null failing it. */
+    public static CallSite instanceOf(MethodHandles.Lookup caller, String invokedName,
+                                      MethodType type, String owner) throws Throwable {
+        MethodHandle isInstance = LOOKUP.findVirtual(Class.class, "isInstance", MethodType.methodType(boolean.class, Object.class));
+        return new ConstantCallSite(isInstance.bindTo(resolve(owner, caller)).asType(type));
+    }
+
+    /** Bootstrap {@code anewarray}: {@code owner} is the element class, and the array a real array of it, so storing
+     *  anything else still throws ArrayStoreException. */
+    public static CallSite newArray(MethodHandles.Lookup caller, String invokedName,
+                                    MethodType type, String owner) throws Throwable {
+        return new ConstantCallSite(MethodHandles.arrayConstructor(resolve(owner, caller).arrayType()).asType(type));
+    }
+
+    /** Bootstrap a class literal, {@code ::class}, as a dynamic constant. */
+    public static Class<?> classConstant(MethodHandles.Lookup caller, String name, Class<?> type, String owner)
+            throws ClassNotFoundException {
+        return resolve(owner, caller);
+    }
+
+    // ---- invokespecial bootstraps -----------------------------------------------------------
+    // Reached only for the calls ScriptWeave's bridgeSpecial reroutes; every other invokespecial runs as written.
+
+    /** Bootstrap a constructor call; {@code desc} is the constructor's own, and the instance comes back as the
+     *  call's result. Resolved like every other member the bridge reaches, so a non-public constructor opens too. */
+    public static CallSite construct(MethodHandles.Lookup caller, String invokedName,
+                                     MethodType type, String owner, String desc) throws Throwable {
+        Class<?> cls = resolve(owner, caller);
+        MethodType mt = MethodType.fromMethodDescriptorString(desc, caller.lookupClass().getClassLoader());
+        return new ConstantCallSite(lookupIn(cls, caller).findConstructor(cls, mt).asType(type));
+    }
+
+    /** Bootstrap a {@code super.method(...)} call, opened like every other member: invokespecial from the declaring
+     *  class {@link #findMethodOwner} finds selects what the snippet's call would have — the first declaration up
+     *  from the class the call names. */
+    public static CallSite superCall(MethodHandles.Lookup caller, String invokedName,
+                                     MethodType type, String owner, String method, String desc) throws Throwable {
+        MethodType mt = MethodType.fromMethodDescriptorString(desc, caller.lookupClass().getClassLoader());
+        Class<?> cls = findMethodOwner(resolve(owner, caller), method, mt);
+        MethodHandles.Lookup lk = lookupIn(cls, caller);
+        MethodHandle mh = lk == caller
+                ? caller.findSpecial(cls, method, mt, caller.lookupClass())
+                : lk.findSpecial(cls, method, mt, cls);
+        return new ConstantCallSite(mh.asType(type));
+    }
 }

@@ -30,6 +30,7 @@ import org.jetbrains.kotlin.config.CommonConfigurationKeys
 import org.jetbrains.kotlin.config.CompilerConfiguration
 import org.jetbrains.kotlin.config.JVMConfigurationKeys
 import org.jetbrains.kotlin.config.JvmTarget
+import org.jetbrains.kotlin.config.JvmWhenGenerationScheme
 import org.jetbrains.kotlin.config.LanguageVersion
 import org.jetbrains.kotlin.config.LanguageVersionSettingsImpl
 import org.jetbrains.kotlin.config.languageVersionSettings
@@ -81,7 +82,9 @@ import org.js.lolifamily.minecraftmcp.Constants
 import org.js.lolifamily.minecraftmcp.exec.GuardLane
 import org.js.lolifamily.minecraftmcp.repl.scope.ScriptScope
 import java.io.File
+import java.util.concurrent.CancellationException
 import java.util.concurrent.locks.ReentrantLock
+import java.util.function.BooleanSupplier
 import kotlin.concurrent.withLock
 import kotlin.script.experimental.api.ScriptDiagnostic
 
@@ -116,7 +119,8 @@ internal object PlainEngine {
     @Volatile
     private var warm: Warm? = null
 
-    /** The FIR caches under a CLI session are single-threaded, so one compile at a time. */
+    /** The FIR caches under a CLI session are single-threaded, so one compile at a time. Every other compile
+     *  waits its turn here, which is why [compile]'s first [checkpoint] comes the moment it gets the lock. */
     private val compileLock = ReentrantLock()
 
     /**
@@ -194,6 +198,11 @@ internal object PlainEngine {
             // Snippets inline mod code (McpScope.yield) and higher bytecode cannot inline into lower, so the
             // running JVM — the ceiling of every loadable class — is the floor for the target.
             put(JVMConfigurationKeys.JVM_TARGET, JvmTarget.fromString(Runtime.version().feature().toString()) ?: JvmTarget.entries.last())
+            // On a 21+ target the backend turns a `when` of type checks into SwitchBootstraps.typeSwitch unless told
+            // otherwise, and from JDK 23 that bootstrap writes each label's `instanceof` into a class of its own, in
+            // the snippet's package, where ScriptWeave never sees it — so a non-public class there is unreachable.
+            // As a chain of type checks, each `is` is a plain INSTANCEOF the weave carries like any other.
+            put(JVMConfigurationKeys.WHEN_GENERATION_SCHEME, JvmWhenGenerationScheme.INLINE)
             // Friend-all: `internal` across every classpath jar. Inert on its own — createLibraryListForJvm
             // below is what turns it into friend module data.
             put(JVMConfigurationKeys.FRIEND_PATHS, widened.map { it.absolutePath })
@@ -235,62 +244,81 @@ internal object PlainEngine {
         Constants.LOG.info("[mcp-plain] warm: {} classpath entries, all friends", widened.size)
     }
 
-    /** Compile [code] to woven class bytes. Off-tick, and [warmUp] must already have run — warming here would
-     *  silently drop its SPLIT api pinning, since the first call is the one that sticks. [name] becomes the
-     *  generated class's name, so a fixed one would give every snippet the same class. */
-    fun compile(code: String, name: String, guardLane: GuardLane?, evalId: Int): Compiled = compileLock.withLock {
-        val w = warm ?: error("plain engine not warmed")
-        w.collector.clear()   // diagnostics from an earlier snippet must not leak into this one
-        val renderInternalNames = w.configuration.renderDiagnosticInternalName
+    /**
+     * Compile [code] to woven class bytes. Off-tick, and [warmUp] must already have run — warming here would
+     * silently drop its SPLIT api pinning, since the first call is the one that sticks. [name] becomes the
+     * generated class's name, so a fixed one would give every snippet the same class.
+     *
+     * Once [abandoned] answers true — the eval was cancelled or reaped, so nothing will read the result — the
+     * next [checkpoint] ends the compile: one still waiting on [compileLock] never starts, and one under way
+     * stops before the checkers or the backend, whichever it reaches next. Nothing stops one inside a phase:
+     * the frontend never polls for cancellation, and the backend polls once before lowering and once after
+     * codegen, with nothing in between. An interrupt is ruled out: the compiler maps its cached jar handles
+     * lazily, and a map on an interrupted thread closes a shared handle that later compiles keep using.
+     */
+    fun compile(code: String, name: String, guardLane: GuardLane?, evalId: Int, abandoned: BooleanSupplier): Compiled =
+        compileLock.withLock {
+            checkpoint(abandoned)
+            val w = warm ?: error("plain engine not warmed")
+            w.collector.clear()   // diagnostics from an earlier snippet must not leak into this one
+            val renderInternalNames = w.configuration.renderDiagnosticInternalName
 
-        val moduleData = FirSourceModuleData(
-            Name.special("<$name>"),
-            w.libraryList.regularDependencies,
-            emptyList(),
-            w.libraryList.friendDependencies,
-            JvmPlatforms.defaultJvmPlatform,
-        )
-        val session: FirSession = FirJvmSessionFactory.createSourceSession(
-            moduleData,
-            javaSourcesScope = AbstractProjectFileSearchScope.EMPTY,
-            createIncrementalCompilationSymbolProviders = { null },
-            extensionRegistrars = registrars,
-            configuration = w.configuration,
-            context = w.sessionContext,
-            needRegisterJavaElementFinder = true,
-            kmpModuleKind = KmpModuleKind.SingleModule,
-            init = {},
-        )
+            val moduleData = FirSourceModuleData(
+                Name.special("<$name>"),
+                w.libraryList.regularDependencies,
+                emptyList(),
+                w.libraryList.friendDependencies,
+                JvmPlatforms.defaultJvmPlatform,
+            )
+            val session: FirSession = FirJvmSessionFactory.createSourceSession(
+                moduleData,
+                javaSourcesScope = AbstractProjectFileSearchScope.EMPTY,
+                createIncrementalCompilationSymbolProviders = { null },
+                extensionRegistrars = registrars,
+                configuration = w.configuration,
+                context = w.sessionContext,
+                needRegisterJavaElementFinder = true,
+                kmpModuleKind = KmpModuleKind.SingleModule,
+                init = {},
+            )
 
-        val reporter = DiagnosticsCollectorImpl()
-        // The extension is what McpScriptConfigurator.accepts matches; the stem is what the script class is named
-        // after. The path must be non-null or `CompilerMessageLocationWithRange.create` drops the whole
-        // location, and every diagnostic arrives without a line to point at.
-        val fileName = "$name$SCRIPT_EXT"
-        val source = KtInMemoryTextSourceFile(fileName, fileName, code)
-        val firFiles = listOf(buildSnippetFir(w.parser, session, source, reporter))
-        val (scopeSession, fir) = session.runResolution(firFiles)
-        session.runCheckers(scopeSession, fir, reporter, MppCheckerKind.Common)
-        session.runCheckers(scopeSession, fir, reporter, MppCheckerKind.Platform)
-        if (reporter.hasErrors) {
+            val reporter = DiagnosticsCollectorImpl()
+            // The extension is what McpScriptConfigurator.accepts matches; the stem is what the script class is named
+            // after. The path must be non-null or `CompilerMessageLocationWithRange.create` drops the whole
+            // location, and every diagnostic arrives without a line to point at.
+            val fileName = "$name$SCRIPT_EXT"
+            val source = KtInMemoryTextSourceFile(fileName, fileName, code)
+            val firFiles = listOf(buildSnippetFir(w.parser, session, source, reporter))
+            val (scopeSession, fir) = session.runResolution(firFiles)
+            checkpoint(abandoned)
+            session.runCheckers(scopeSession, fir, reporter, MppCheckerKind.Common)
+            session.runCheckers(scopeSession, fir, reporter, MppCheckerKind.Platform)
+            if (reporter.hasErrors) {
+                reporter.reportToMessageCollector(w.collector, renderInternalNames)
+                return Compiled.Failed(w.collector.diagnostics)
+            }
+
+            checkpoint(abandoned)
+            val frontend = AllModulesFrontendOutput(listOf(SingleModuleFrontendOutput(session, scopeSession, fir)))
+            val emitted = emitBytecode(w, TargetId(name, "java-production"), frontend, reporter, yieldTypes(fir, session))
             reporter.reportToMessageCollector(w.collector, renderInternalNames)
-            return Compiled.Failed(w.collector.diagnostics)
+            if (reporter.hasErrors) return Compiled.Failed(w.collector.diagnostics)
+
+            val raw = LinkedHashMap<String, ByteArray>()
+            for (f in emitted.state.factory.asList()) raw[f.relativePath] = f.asByteArray()
+            // The lowering tags the script class with its own name and its result field, so nothing here guesses.
+            val result = extractResultFields(emitted.irModule).values.firstOrNull()
+            val mainClass = result?.scriptClassName?.asString() ?: scriptClassName(emitted.irModule)
+            val woven = weaveClasses(raw, guardLane, evalId, w.classpath)
+            val resultCone = result?.let { resultConeType(fir) }
+            val resultType = result?.let { resultTypeName(resultCone, it.fieldTypeName) }
+            return Compiled.Ok(woven, mainClass, result?.fieldName?.asString(), resultType, valueClassName(resultCone, session))
         }
 
-        val frontend = AllModulesFrontendOutput(listOf(SingleModuleFrontendOutput(session, scopeSession, fir)))
-        val emitted = emitBytecode(w, TargetId(name, "java-production"), frontend, reporter, yieldTypes(fir, session))
-        reporter.reportToMessageCollector(w.collector, renderInternalNames)
-        if (reporter.hasErrors) return Compiled.Failed(w.collector.diagnostics)
-
-        val raw = LinkedHashMap<String, ByteArray>()
-        for (f in emitted.state.factory.asList()) raw[f.relativePath] = f.asByteArray()
-        // The lowering tags the script class with its own name and its result field, so nothing here guesses.
-        val result = extractResultFields(emitted.irModule).values.firstOrNull()
-        val mainClass = result?.scriptClassName?.asString() ?: scriptClassName(emitted.irModule)
-        val woven = weaveClasses(raw, guardLane, evalId, w.classpath)
-        val resultCone = result?.let { resultConeType(fir) }
-        val resultType = result?.let { resultTypeName(resultCone, it.fieldTypeName) }
-        return Compiled.Ok(woven, mainClass, result?.fieldName?.asString(), resultType, valueClassName(resultCone, session))
+    /** Where an abandoned compile ends — see [compile]. Nobody reads the throw: the cancel or reap that set
+     *  [abandoned] already answered the caller. */
+    private fun checkpoint(abandoned: BooleanSupplier) {
+        if (abandoned.asBoolean) throw CancellationException("compile abandoned: its eval already ended")
     }
 
     /** What `buildFirViaLightTree` does for one file, with [SnippetParser]'s tree in place of the script-mode one

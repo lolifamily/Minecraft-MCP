@@ -5,6 +5,7 @@ import org.js.lolifamily.minecraftmcp.exec.GuardLane;
 
 import java.io.File;
 import java.util.List;
+import java.util.function.BooleanSupplier;
 
 /**
  * Type-safe gateway across the game-loader ↔ masking-loader boundary. Aggregates every operation that can
@@ -46,9 +47,11 @@ public interface MaskingBridge {
      * @param guardLane the target lane's scriptguard to instrument the snippet against, or {@code null} for the
      *                  off-tick lane (no watchdog, no guard instrumentation)
      * @param evalId    the kill id that fires THIS eval's woven check
+     * @param abandoned true once nothing will read the result; the compile then stops at its next checkpoint,
+     *                  throwing {@link java.util.concurrent.CancellationException}
      * @return an opaque compiled-script handle for {@link #execute}
      */
-    Object compile(String code, List<File> cpFiles, GuardLane guardLane, int evalId);
+    Object compile(String code, List<File> cpFiles, GuardLane guardLane, int evalId, BooleanSupplier abandoned);
 
     /**
      * Run a compiled handle.
@@ -71,14 +74,14 @@ public interface MaskingBridge {
     // ---- Remap cache builder — repl.impl.RemapCacheBuilder --------------------------------------
 
     /**
-     * Assemble the remap mappings and reverse-remap {@code runtimeMcUri} into a mojmap symbol jar.
-     * See {@link ReplBridge#buildRemapArtifacts} for the argument contract.
+     * Assemble the remap mappings, the MC-version half of the bundle.
+     * See {@link ReplBridge#assembleMappings} for the argument contract.
      */
-    void buildArtifacts(String clientTxt, String secondSource, String runtimeMcUri, String outMappings, String outSymbolsDir);
+    void assembleMappings(String clientTxt, String secondSource, String outMappings);
 
     /**
-     * Forge Mixed-SRG analog of {@link #buildArtifacts}: assemble {@code srg_to_official} from the MCPConfig
-     * {@code joinedTsrg} + Mojang mappings, then reverse-remap the Mixed-SRG runtime jar into a mojmap symbol jar.
+     * Reverse-remap {@code runtimeMcUri} through cached mappings into a mojmap symbol jar, the loader half.
+     * See {@link ReplBridge#buildSymbols} for the argument contract.
      */
-    void buildForgeArtifacts(String joinedTsrg, String clientTxt, String runtimeMcUri, String outMappings, String outSymbolsDir);
+    void buildSymbols(String runtimeMcUri, String mappings, String outSymbolsDir);
 }
